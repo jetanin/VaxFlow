@@ -1,0 +1,16 @@
+{
+  "name": "medcast-backend",
+  "version": "1.0.0",
+  "description": "MedCast_Secure API — serves drug-shortage forecasts from Postgres",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "csv-parse": "^5.5.6",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
+}

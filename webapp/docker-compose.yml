@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: medcast
+      POSTGRES_PASSWORD: medcast
+      POSTGRES_DB: medcast
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medcast"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: medcast
+      PGPASSWORD: medcast
+      PGDATABASE: medcast
+      SEED_DIR: /seed
+      PORT: 4000
+    volumes:
+      # mount ข้อมูล + weight (read-only) ให้ backend seed ลง Postgres
+      - ../data:/seed/data:ro
+      - ../models:/seed/models:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:
