@@ -37,13 +37,17 @@ docker compose up --build
 
 ## 🔑 บัญชีเข้าสู่ระบบ (Login)
 
-มี 1 บัญชีต่อโรงพยาบาล (seed อัตโนมัติ):
+seed อัตโนมัติ (รหัสผ่านเดียวกันทุกบัญชี):
 
-| Username | Password |
-| --- | --- |
-| `HOSP_001` … `HOSP_004` | `medcast123` |
+| Username | Role | สิทธิ์ | Password |
+| --- | --- | --- | --- |
+| `admin` | 🛡️ admin | เห็นพยากรณ์/คลังยา **ทุกโรงพยาบาล** | `medcast123` |
+| `HOSP_001` … `HOSP_004` | 🏥 hospital | เห็นเฉพาะ **ของตัวเอง** + ยืมยาได้ | `medcast123` |
 
-> เปลี่ยนรหัสตั้งต้นได้ด้วย env `DEFAULT_PASSWORD` ของ backend · เปลี่ยน JWT secret ด้วย `JWT_SECRET`
+- **admin** ดูภาพรวมทุก รพ. (Map/AI/ยาทั้งหมด/Audit) แต่ไม่ทำรายการยืม-คืน
+- **hospital** ข้อมูลถูกกรองที่ backend (`scopedHospital`) — เห็นได้แค่ รพ. ตัวเองเท่านั้น
+
+> เปลี่ยนรหัสตั้งต้นด้วย env `DEFAULT_PASSWORD` · เปลี่ยน JWT secret ด้วย `JWT_SECRET`
 
 ## 🤝 ยืมยา (Borrow)
 
@@ -56,14 +60,31 @@ docker compose up --build
   ตามแบบฟอร์มราชการ (เติมข้อมูลอัตโนมัติ + แก้ไขในช่องได้) แล้วกด **🖨️ พิมพ์ / บันทึก PDF**
   (ใช้ระบบพิมพ์ของเบราว์เซอร์ → เลือก "Save as PDF")
 
+## 🔄 Retrain อัตโนมัติรายวัน
+
+service **`retrainer`** (Python) ใน docker-compose จะทำงานทันทีตอนเริ่ม แล้ว**ซ้ำทุก 24 ชม.**:
+
+```
+ทุกวัน → scripts/retrain.py
+   1) build features จากข้อมูลล่าสุดทุก รพ.
+   2) เทรน local SGD แต่ละ รพ. + DP noise → FedAvg → weight กลางใหม่
+   3) บันทึก models/fedavg_dp_demand.joblib + global_weights.csv
+   4) คำนวณ forecast_snapshot.csv ใหม่ (ใช้ stock ปัจจุบัน)
+   5) POST /api/reseed → backend โหลดเข้า Postgres → dashboard เห็นค่าใหม่
+```
+
+> นอกจากนี้ **ทุกครั้งที่อนุมัติคำขอยืมยา** ระบบจะโอนสต็อก + คำนวณ days-of-supply/สถานะใหม่ทันที (real-time)
+> รันมือได้ด้วย `python scripts/retrain.py` · ปรับ noise ด้วย env `DP_SIGMA` · เปลี่ยน `RESEED_TOKEN` ใน production
+
 ## REST API
 
 | Endpoint | Auth | คืนค่า |
 | --- | :---: | --- |
 | `GET /api/health` | | สถานะ + การเชื่อม DB |
-| `GET /api/summary` | | KPI (จำนวน รพ., ยาขาด/ใกล้หมด, confidence) |
-| `GET /api/hospitals` | | รายชื่อ รพ. + พิกัด + สถานะรวม (แผนที่) |
-| `GET /api/forecasts?hospital_id=&status=` | | พยากรณ์รายยา (กรองได้) |
+| `GET /api/summary` | ✅ | KPI (scoped ตาม role) |
+| `GET /api/hospitals` | ✅ | รายชื่อ รพ. + พิกัด + สถานะรวม (scoped ตาม role) |
+| `GET /api/forecasts?status=` | ✅ | พยากรณ์รายยา (hospital เห็นแค่ของตัวเอง) |
+| `GET /api/drugs` | ✅ | คลังยาทั้งหมดในระบบ (รวมต่อกลุ่มยา, scoped ตาม role) |
 | `GET /api/privacy` | | สถานะ FL / DP / TLS / weight |
 | `GET /api/weights` | | weight กลาง |
 | `POST /api/login` | | `{username,password}` → JWT token |
@@ -74,16 +95,18 @@ docker compose up --build
 | `PATCH /api/borrow/:id` | ✅ | ผู้ให้ยืมอนุมัติ/ปฏิเสธ |
 | `GET /api/alerts` | ✅ | แจ้งเตือน: ใกล้หมดอายุ (FEFO) / ต่ำกว่าจุดสั่งซื้อ / ขาดแคลน |
 | `GET /api/audit` | ✅ | Audit Trail (timestamp + IP ทุกธุรกรรม) |
+| `POST /api/reseed` | 🔑 token | โหลด CSV ใหม่เข้า DB (เรียกโดย retrainer หลังเทรน) |
 
 > Auth = ต้องส่ง header `Authorization: Bearer <token>`
 
 ## หน้าจอ (3 พาเนล)
 1. **🗺️ Overview Map** — แผนที่ Leaflet หมุด รพ. ระบายสีตามสถานะ 🟢🟡🔴
 2. **🤖 AI Intelligence** — เลือก รพ. → กราฟ days-of-supply (Recharts) + คงคลัง + Confidence
-3. **🔔 แจ้งเตือน** — ใกล้หมดอายุ (FEFO) / ต่ำกว่าจุดสั่งซื้อ (Reorder) / ขาดแคลนด่วน
-4. **🤝 ยืมยา** — ฟอร์ม + บันทึกข้อความ PDF (Smart Borrowing GPS)
-5. **📜 Audit Trail** — บันทึกทุกธุรกรรม timestamp + IP (แก้ย้อนหลังไม่ได้)
-6. **🔒 Privacy Control** — สถานะ Federated Learning / DP / TLS + กระแสข้อมูล
+3. **💊 ยาทั้งหมด** — คลังยารวมทุกกลุ่ม (admin = ทุก รพ. / hospital = ของตัวเอง)
+4. **🔔 แจ้งเตือน** — ใกล้หมดอายุ (FEFO) / ต่ำกว่าจุดสั่งซื้อ (Reorder) / ขาดแคลนด่วน *(เฉพาะ hospital)*
+5. **🤝 ยืมยา** — ฟอร์ม + บันทึกข้อความ PDF (Smart Borrowing GPS) *(เฉพาะ hospital)*
+6. **📜 Audit Trail** — บันทึกทุกธุรกรรม timestamp + IP (แก้ย้อนหลังไม่ได้)
+7. **🔒 Privacy Control** — สถานะ Federated Learning / DP / TLS + กระแสข้อมูล
 
 ## 💻 พัฒนาแบบ local (`npm run dev`)
 

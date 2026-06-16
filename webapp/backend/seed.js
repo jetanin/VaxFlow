@@ -36,28 +36,34 @@ async function ensureSchema() {
     CREATE TABLE IF NOT EXISTS weights (feature TEXT PRIMARY KEY, weight DOUBLE PRECISION);
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
-      hospital_id TEXT, created_at TIMESTAMPTZ DEFAULT now());
+      hospital_id TEXT, role TEXT NOT NULL DEFAULT 'hospital', created_at TIMESTAMPTZ DEFAULT now());
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'hospital';
     CREATE TABLE IF NOT EXISTS borrow_requests (
       id SERIAL PRIMARY KEY, from_hospital TEXT, to_hospital TEXT, drug TEXT NOT NULL,
       quantity DOUBLE PRECISION NOT NULL, reason TEXT,
       status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT now());
     CREATE TABLE IF NOT EXISTS audit_log (
       id SERIAL PRIMARY KEY, ts TIMESTAMPTZ NOT NULL DEFAULT now(), actor TEXT,
-      action TEXT NOT NULL, entity TEXT, entity_id TEXT, detail TEXT, ip TEXT);
+      action TEXT NOT NULL, entity TEXT, entity_id TEXT, detail TEXT, ip TEXT, ip_location TEXT);
+    ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS ip_location TEXT;
   `);
 }
 
 async function seedUsers(hospitals) {
   const hash = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
+  // admin: ดูได้ทุก รพ. (hospital_id = NULL, role = admin)
+  await pool.query(
+    `INSERT INTO users (username, password_hash, hospital_id, role)
+     VALUES ('admin', $1, NULL, 'admin') ON CONFLICT (username) DO NOTHING`, [hash]);
+  // hospital users: username = hospital_id, role = hospital
   for (const h of hospitals) {
-    // username = hospital_id, รหัสผ่านเริ่มต้น = DEFAULT_PASSWORD
     await pool.query(
-      `INSERT INTO users (username, password_hash, hospital_id)
-       VALUES ($1, $2, $3) ON CONFLICT (username) DO NOTHING`,
+      `INSERT INTO users (username, password_hash, hospital_id, role)
+       VALUES ($1, $2, $3, 'hospital') ON CONFLICT (username) DO NOTHING`,
       [h.hospital_id, hash, h.hospital_id]
     );
   }
-  console.log(`[seed] users: ${hospitals.length} (password ตั้งต้น = "${DEFAULT_PASSWORD}")`);
+  console.log(`[seed] users: 1 admin + ${hospitals.length} hospital (password = "${DEFAULT_PASSWORD}")`);
 }
 
 async function seed() {

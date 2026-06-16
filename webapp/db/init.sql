@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     entity        TEXT,         -- ประเภท (borrow_request ...)
     entity_id     TEXT,
     detail        TEXT,
-    ip            TEXT
+    ip            TEXT,
+    ip_location   TEXT          -- ตำแหน่งโดยประมาณจาก IP (geo lookup)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);

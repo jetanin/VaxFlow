@@ -55,7 +55,7 @@ feature engineering → train → weights
 | `00_load_data.ipynb`        | โหลด 4 ชุดข้อมูลจาก Kaggle + แปลงเป็น CSV                         | `data/<dataset>/`                               |
 | `01_data_cleaning.ipynb`    | ทำความสะอาด (รวมคอลัมน์ซ้ำ, แปลง datetime, จัดการ null)           | `data/clean/`                                   |
 | `02_eda.ipynb`              | สำรวจข้อมูล (แนวโน้ม, ฤดูกาล, ความผันผวน, correlation)            | กราฟ EDA                                        |
-| `03_feature_engineer.ipynb` | สร้างฟีเจอร์: time, cyclical, lag, rolling, relational/cross-drug | `data/features/daily_features.csv` (47 ฟีเจอร์) |
+| `03_feature_engineer.ipynb` | สร้างฟีเจอร์: time, cyclical, วันหยุด/ฤดูกาล, lag, rolling, relational/cross-drug | `data/features/daily_features.csv` (~50 ฟีเจอร์) |
 | `04_model_training.ipynb`   | จูน 3 โมเดลด้วย Optuna + **FedAvg จริงจาก 4 รพ.** + DP            | `models/*.joblib`, `*_results.csv`              |
 | `05_model_evaluation.ipynb` | ประเมิน error ต่อกลุ่มยา, confidence, สถานะสี                     | `data/predictions/`                             |
 

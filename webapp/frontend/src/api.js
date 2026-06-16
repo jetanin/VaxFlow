@@ -33,6 +33,7 @@ export const api = {
   // public-ish
   summary: () => req("/summary"),
   hospitals: () => req("/hospitals"),
+  drugs: () => req("/drugs"),
   forecasts: (hospitalId, status) =>
     req(`/forecasts?${hospitalId ? `hospital_id=${hospitalId}&` : ""}${status ? `status=${status}` : ""}`),
   privacy: () => req("/privacy"),

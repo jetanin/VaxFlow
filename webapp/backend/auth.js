@@ -20,4 +20,12 @@ function requireAuth(req, res, next) {
   }
 }
 
-module.exports = { signToken, requireAuth };
+// middleware: เฉพาะ admin (ใช้ต่อจาก requireAuth)
+function requireAdmin(req, res, next) {
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ error: "เฉพาะผู้ดูแลระบบ (admin) เท่านั้น" });
+  }
+  next();
+}
+
+module.exports = { signToken, requireAuth, requireAdmin };

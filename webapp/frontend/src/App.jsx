@@ -7,14 +7,17 @@ import PrivacyPanel from "./components/PrivacyPanel.jsx";
 import Borrow from "./components/Borrow.jsx";
 import Alerts from "./components/Alerts.jsx";
 import AuditTrail from "./components/AuditTrail.jsx";
+import Drugs from "./components/Drugs.jsx";
 
-const TABS = [
+// hospitalOnly = แสดงเฉพาะผู้ใช้ระดับโรงพยาบาล (admin เป็นผู้ดูภาพรวม ไม่ทำรายการยืม)
+const ALL_TABS = [
   { id: "map", label: "🗺️ Overview Map" },
   { id: "ai", label: "🤖 AI Intelligence" },
-  { id: "alerts", label: "🔔 แจ้งเตือน" },
-  { id: "borrow", label: "🤝 ยืมยา" },
-  { id: "audit", label: "📜 Audit Trail" },
-  { id: "privacy", label: "🔒 Privacy Control" },
+  { id: "drugs", label: "💊 ยาทั้งหมด" },
+  { id: "alerts", label: "🔔 แจ้งเตือน", hospitalOnly: true },
+  { id: "borrow", label: "🤝 ยืมยา", hospitalOnly: true },
+  { id: "audit", label: "📜 Audit Trail", adminOnly: true },
+  { id: "privacy", label: "🔒 Privacy Control", adminOnly: true },
 ];
 
 export default function App() {
@@ -39,6 +42,10 @@ export default function App() {
   if (!summary) return <div className="app"><p className="muted">กำลังโหลด...</p></div>;
 
   const me = auth.hospital;
+  const isAdmin = me?.role === "admin";
+  // admin เห็นทุกแท็บ; hospital ไม่เห็นแท็บ adminOnly
+  const TABS = ALL_TABS.filter((t) => isAdmin || !t.adminOnly);
+  const activeTab = TABS.some((t) => t.id === tab) ? tab : "map";
 
   return (
     <div className="app">
@@ -48,7 +55,8 @@ export default function App() {
           <p className="subtitle">Federated Learning + Differential Privacy</p>
         </div>
         <div className="user-box">
-          <span className="muted">🏥 {me?.name || me?.hospital_id}</span>
+          <span className="muted">{isAdmin ? "🛡️ " : "🏥 "}{me?.name || me?.hospital_id}</span>
+          <span className={`badge ${isAdmin ? "red" : "green"}`}>{isAdmin ? "ADMIN" : "HOSPITAL"}</span>
           <button className="tab" onClick={() => { auth.logout(); setAuthed(false); }}>ออกจากระบบ</button>
         </div>
       </div>
@@ -62,18 +70,19 @@ export default function App() {
 
       <div className="tabs">
         {TABS.map((t) => (
-          <button key={t.id} className={`tab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>
+          <button key={t.id} className={`tab ${activeTab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>
             {t.label}
           </button>
         ))}
       </div>
 
-      {tab === "map" && <OverviewMap hospitals={hospitals} />}
-      {tab === "ai" && <AIIntelligence hospitals={hospitals} />}
-      {tab === "alerts" && <Alerts />}
-      {tab === "borrow" && <Borrow />}
-      {tab === "audit" && <AuditTrail />}
-      {tab === "privacy" && <PrivacyPanel />}
+      {activeTab === "map" && <OverviewMap hospitals={hospitals} />}
+      {activeTab === "ai" && <AIIntelligence hospitals={hospitals} />}
+      {activeTab === "drugs" && <Drugs />}
+      {activeTab === "alerts" && <Alerts />}
+      {activeTab === "borrow" && <Borrow />}
+      {activeTab === "audit" && <AuditTrail />}
+      {activeTab === "privacy" && <PrivacyPanel />}
 
       <p className="subtitle" style={{ marginTop: 16 }}>MedCast_Secure · Logistics Innovation Hackathon 2026</p>
     </div>

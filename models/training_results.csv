@@ -1,6 +1,5 @@
 model,MAE,RMSE,R2
-randomforest,3.287,5.599,0.749
-xgboost,3.283,5.667,0.743
-lightgbm,3.304,5.711,0.739
-neuralnet,3.365,5.799,0.731
+xgboost,3.259,5.6,0.749
+randomforest,3.323,5.639,0.746
+lightgbm,3.293,5.693,0.741
 baseline_lag1,4.423,7.611,0.537

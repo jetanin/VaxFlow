@@ -8,6 +8,7 @@ const STATUS_TH = {
 
 export default function Borrow() {
   const me = auth.hospital;
+  const isAdmin = me?.role === "admin";
   const [redDrugs, setRedDrugs] = useState([]);
   const [drug, setDrug] = useState("");
   const [lenders, setLenders] = useState([]);
@@ -23,10 +24,12 @@ export default function Borrow() {
   }
 
   useEffect(() => {
-    api.forecasts(me.hospital_id, "red").then((rows) => {
-      setRedDrugs(rows);
-      if (rows[0]) setDrug(rows[0].drug);
-    });
+    if (!isAdmin) {
+      api.forecasts(me.hospital_id, "red").then((rows) => {
+        setRedDrugs(rows);
+        if (rows[0]) setDrug(rows[0].drug);
+      });
+    }
     refresh();
   }, []);
 
@@ -55,7 +58,8 @@ export default function Borrow() {
 
   return (
     <div className="row">
-      {/* ---- ฟอร์มยืมยา ---- */}
+      {/* ---- ฟอร์มยืมยา (เฉพาะผู้ใช้ระดับโรงพยาบาล) ---- */}
+      {!isAdmin && (
       <div className="panel">
         <h2>📝 ยืมยาจากโรงพยาบาลอื่น</h2>
         {redDrugs.length === 0 ? (
@@ -90,21 +94,26 @@ export default function Borrow() {
         )}
         {msg && <p className="muted">{msg}</p>}
       </div>
+      )}
 
       {/* ---- รายการคำขอ ---- */}
       <div className="panel">
-        <h2>📋 คำขอยืมยา</h2>
+        <h2>📋 คำขอยืมยา {isAdmin && "(ทุกโรงพยาบาล)"}</h2>
         <table>
           <thead>
-            <tr><th>ทิศทาง</th><th>ยา</th><th>จำนวน</th><th>คู่</th><th>สถานะ</th><th></th></tr>
+            <tr><th>ทิศทาง</th><th>ยา</th><th>จำนวน</th><th>คู่ (ขอ → ให้)</th><th>สถานะ</th><th></th></tr>
           </thead>
           <tbody>
             {requests.map((r) => (
               <tr key={r.id}>
-                <td>{r.direction === "outgoing" ? "📤 ขอยืม" : "📥 ถูกขอ"}</td>
+                <td>{r.direction === "outgoing" ? "📤 ขอยืม" : r.direction === "incoming" ? "📥 ถูกขอ" : "📋 ภาพรวม"}</td>
                 <td>{r.drug}</td>
                 <td>{r.quantity}</td>
-                <td className="muted">{r.direction === "outgoing" ? r.to_name : r.from_name}</td>
+                <td className="muted">
+                  {r.direction === "oversight"
+                    ? `${r.from_name} → ${r.to_name}`
+                    : r.direction === "outgoing" ? r.to_name : r.from_name}
+                </td>
                 <td>{STATUS_TH[r.status]}</td>
                 <td>
                   {r.direction === "incoming" && r.status === "pending" && (

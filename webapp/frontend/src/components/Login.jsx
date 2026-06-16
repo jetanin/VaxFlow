@@ -14,7 +14,7 @@ export default function Login({ onLogin }) {
     try {
       const r = await api.login(username.trim(), password);
       auth.token = r.token;
-      auth.hospital = { hospital_id: r.hospital_id, name: r.name };
+      auth.hospital = { hospital_id: r.hospital_id, name: r.name, role: r.role };
       onLogin();
     } catch (err) {
       setError(err.message);
@@ -42,7 +42,8 @@ export default function Login({ onLogin }) {
           {loading ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
         </button>
         <p className="muted" style={{ fontSize: "0.8rem" }}>
-          บัญชีตัวอย่าง: <b>HOSP_001…HOSP_004</b> · รหัสผ่าน <b>medcast123</b>
+          🏥 รพ.: <b>HOSP_001…HOSP_004</b> (เห็นเฉพาะของตัวเอง)<br />
+          🛡️ admin: <b>admin</b> (เห็นทุก รพ.) · รหัสผ่าน <b>medcast123</b>
         </p>
       </form>
     </div>

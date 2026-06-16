@@ -6,6 +6,7 @@ const ACTION_TH = {
   create_borrow: "📤 ขอยืมยา",
   approve_borrow: "✅ อนุมัติ",
   reject_borrow: "❌ ปฏิเสธ",
+  retrain_forecast: "🔄 อัปเดตพยากรณ์อัตโนมัติ",
 };
 
 export default function AuditTrail() {
@@ -23,7 +24,7 @@ export default function AuditTrail() {
       </p>
       <table>
         <thead>
-          <tr><th>เวลา</th><th>ผู้ทำรายการ</th><th>การกระทำ</th><th>รายละเอียด</th><th>IP</th></tr>
+          <tr><th>เวลา</th><th>ผู้ทำรายการ</th><th>การกระทำ</th><th>รายละเอียด</th><th>IP</th><th>ตำแหน่ง</th></tr>
         </thead>
         <tbody>
           {rows.map((r) => (
@@ -33,9 +34,10 @@ export default function AuditTrail() {
               <td>{ACTION_TH[r.action] || r.action}</td>
               <td className="muted">{r.detail}</td>
               <td className="muted">{r.ip}</td>
+              <td className="muted">📍 {r.ip_location || "-"}</td>
             </tr>
           ))}
-          {rows.length === 0 && <tr><td colSpan="5" className="muted">ยังไม่มีบันทึก</td></tr>}
+          {rows.length === 0 && <tr><td colSpan="6" className="muted">ยังไม่มีบันทึก</td></tr>}
         </tbody>
       </table>
     </div>

@@ -34,6 +34,7 @@ services:
       PGDATABASE: medcast
       SEED_DIR: /seed
       PORT: 4000
+      RESEED_TOKEN: medcast-reseed   # token ภายในสำหรับ retrainer เรียก /api/reseed
     volumes:
       # mount ข้อมูล + weight (read-only) ให้ backend seed ลง Postgres
       - ../data:/seed/data:ro
@@ -50,6 +51,18 @@ services:
       - backend
     ports:
       - "8080:80"
+
+  # เทรน FedAvg ใหม่อัตโนมัติทุกวัน -> อัปเดต weight + snapshot -> สั่ง backend reseed
+  retrainer:
+    build: ./retrainer
+    environment:
+      BACKEND_URL: http://backend:4000
+      RESEED_TOKEN: medcast-reseed
+      DP_SIGMA: "0.1"
+    volumes:
+      - ..:/repo            # ทั้ง repo (อ่าน data/, เขียน models/ + data/predictions/)
+    depends_on:
+      - backend
 
 volumes:
   pgdata:
