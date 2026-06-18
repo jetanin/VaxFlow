@@ -64,7 +64,10 @@ export default function App() {
         <div className="user-box">
           <span className="muted">{isAdmin ? "🛡️ " : "🏥 "}{me?.name || me?.hospital_id}</span>
           <span className={`badge ${isAdmin ? "red" : "green"}`}>{isAdmin ? "ADMIN" : "HOSPITAL"}</span>
-          <button className="tab" onClick={() => { auth.logout(); setAuthed(false); }}>ออกจากระบบ</button>
+          <button className="tab" onClick={async () => {
+            try { await api.logoutServer(); } catch { /* best-effort */ }
+            auth.logout(); setAuthed(false);
+          }}>ออกจากระบบ</button>
         </div>
       </div>
 

@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS users (
     hospital_id   TEXT REFERENCES hospitals(hospital_id),  -- NULL = admin (ดูได้ทุก รพ.)
     role          TEXT NOT NULL DEFAULT 'hospital'         -- 'admin' | 'hospital'
                   CHECK (role IN ('admin', 'hospital')),
+    reset_key         TEXT,          -- คีย์ 4 หลักสำหรับเปลี่ยนรหัส (ออกโดย admin)
+    reset_key_expires TIMESTAMPTZ,
     created_at    TIMESTAMPTZ DEFAULT now()
 );
 

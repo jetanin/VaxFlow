@@ -47,6 +47,13 @@ export const api = {
   // auth
   login: (username, password) =>
     req("/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  logoutServer: () => req("/logout", { method: "POST" }),
+  changePassword: (username, key, new_password) =>
+    req("/change-password", { method: "POST", body: JSON.stringify({ username, key, new_password }) }),
+  adminResetKey: (username) =>
+    req("/admin/reset-key", { method: "POST", body: JSON.stringify({ username }) }),
+  adminResetPassword: (username) =>
+    req("/admin/reset-password", { method: "POST", body: JSON.stringify({ username }) }),
   // borrow
   lenders: (drug) => req(`/lenders?drug=${encodeURIComponent(drug)}`),
   createBorrow: (payload) => req("/borrow", { method: "POST", body: JSON.stringify(payload) }),

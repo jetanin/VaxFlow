@@ -39,6 +39,8 @@ async function ensureSchema() {
       id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
       hospital_id TEXT, role TEXT NOT NULL DEFAULT 'hospital', created_at TIMESTAMPTZ DEFAULT now());
     ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'hospital';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_key TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_key_expires TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS borrow_requests (
       id SERIAL PRIMARY KEY, from_hospital TEXT, to_hospital TEXT, drug TEXT NOT NULL,
       quantity DOUBLE PRECISION NOT NULL, reason TEXT,

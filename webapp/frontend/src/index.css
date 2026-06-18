@@ -133,6 +133,13 @@ select { background: #0f172a; color: var(--text); border: 1px solid #334155;
 .filterbar select { background: #0f172a; color: var(--text); border: 1px solid #334155;
                     border-radius: 8px; padding: 8px; }
 
+/* กล่องอธิบาย TLS/SSL */
+.tls-box { background: #0f172a; border: 1px solid #334155; border-left: 4px solid #2563eb;
+           border-radius: 8px; padding: 14px 18px; margin-bottom: 14px; }
+.tls-box ol { margin: 8px 0; padding-left: 20px; }
+.tls-box li { margin-bottom: 6px; }
+.tls-box code { background: #1e293b; padding: 1px 5px; border-radius: 4px; }
+
 /* preview เอกสารที่เซ็น (รูป/PDF) */
 .preview-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(15,23,42,0.9);
                    display: flex; align-items: center; justify-content: center; padding: 20px; }

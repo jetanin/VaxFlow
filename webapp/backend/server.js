@@ -220,14 +220,28 @@ app.get("/api/drugs", requireAuth, async (req, res, next) => {
 app.get("/api/privacy", requireAuth, requireAdmin, async (_req, res, next) => {
   try {
     const w = await pool.query("SELECT COUNT(*) AS n_weights FROM weights");
-    const h = await pool.query("SELECT hospital_id, name FROM hospitals ORDER BY hospital_id");
+    // online = "เหตุการณ์ล่าสุด" ของ รพ. เป็น login (ไม่ใช่ logout) และอยู่ภายใน 30 นาที
+    const h = await pool.query(`
+      WITH ev AS (
+        SELECT actor, action, ts,
+               ROW_NUMBER() OVER (PARTITION BY actor ORDER BY ts DESC) AS rn
+        FROM audit_log WHERE action IN ('login', 'logout')
+      )
+      SELECT h.hospital_id, h.name,
+             (SELECT MAX(ts) FROM audit_log a
+              WHERE a.actor = h.hospital_id AND a.action = 'login') AS last_login,
+             COALESCE(le.action = 'login' AND le.ts > now() - interval '30 minutes', false) AS online
+      FROM hospitals h
+      LEFT JOIN ev le ON le.actor = h.hospital_id AND le.rn = 1
+      ORDER BY h.hospital_id`);
     res.json({
       federated_learning: "active",
       differential_privacy: { enabled: true, sigma: 0.1 },
       transport: "TLS/SSL",
       secure_aggregation: true,
       n_weights: parseInt(w.rows[0].n_weights, 10),
-      hospitals: h.rows.map((r) => ({ ...r, online: true })),
+      online_count: h.rows.filter((r) => r.online).length,
+      hospitals: h.rows,
     });
   } catch (e) { next(e); }
 });
@@ -265,6 +279,67 @@ app.post("/api/login", async (req, res, next) => {
 // ข้อมูลผู้ใช้ปัจจุบัน
 app.get("/api/me", requireAuth, (req, res) => {
   res.json({ hospital_id: req.user.hospital_id, role: req.user.role, name: req.user.name });
+});
+
+// ออกจากระบบ — บันทึก audit เพื่อให้สถานะเป็น offline ทันที
+app.post("/api/logout", requireAuth, async (req, res) => {
+  await logAudit(req, "logout", "user", req.user.hospital_id || "admin", "ออกจากระบบ");
+  res.json({ ok: true });
+});
+
+const RESET_PW = process.env.DEFAULT_PASSWORD || "medcast123";
+
+// admin: ออกคีย์ 4 หลักให้ รพ. ไปใช้เปลี่ยนรหัส (หมดอายุใน 1 ชม.)
+app.post("/api/admin/reset-key", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { username } = req.body || {};
+    const key = String(Math.floor(1000 + Math.random() * 9000));
+    const r = await pool.query(
+      `UPDATE users SET reset_key=$1, reset_key_expires=now()+interval '1 hour'
+       WHERE username=$2 RETURNING username`, [key, username]);
+    if (!r.rows[0]) return res.status(404).json({ error: "ไม่พบบัญชี" });
+    await logAudit(req, "issue_reset_key", "user", username, `ออกคีย์เปลี่ยนรหัสให้ ${username}`);
+    res.json({ username, key });
+  } catch (e) { next(e); }
+});
+
+// admin: รีเซ็ตรหัสผ่านกลับเป็นค่าตั้งต้น (medcast123)
+app.post("/api/admin/reset-password", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { username } = req.body || {};
+    const hash = bcrypt.hashSync(RESET_PW, 10);
+    const r = await pool.query(
+      `UPDATE users SET password_hash=$1, reset_key=NULL, reset_key_expires=NULL
+       WHERE username=$2 RETURNING username`, [hash, username]);
+    if (!r.rows[0]) return res.status(404).json({ error: "ไม่พบบัญชี" });
+    await logAudit(req, "reset_password", "user", username, `รีเซ็ตรหัสผ่าน ${username} เป็นค่าตั้งต้น`);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// public: เปลี่ยนรหัสผ่านด้วยคีย์ที่ได้จาก admin
+app.post("/api/change-password", async (req, res, next) => {
+  try {
+    const { username, key, new_password } = req.body || {};
+    if (!username || !key || !new_password)
+      return res.status(400).json({ error: "กรอก username / คีย์ / รหัสผ่านใหม่ ให้ครบ" });
+    if (String(new_password).length < 6)
+      return res.status(400).json({ error: "รหัสผ่านใหม่ต้องยาวอย่างน้อย 6 ตัว" });
+    const u = await pool.query(
+      "SELECT reset_key, reset_key_expires FROM users WHERE username=$1", [username]);
+    const row = u.rows[0];
+    if (!row || !row.reset_key || row.reset_key !== String(key))
+      return res.status(403).json({ error: "คีย์ไม่ถูกต้อง (ขอคีย์จาก admin)" });
+    if (!row.reset_key_expires || new Date(row.reset_key_expires) < new Date())
+      return res.status(403).json({ error: "คีย์หมดอายุแล้ว — ขอใหม่จาก admin" });
+    const hash = bcrypt.hashSync(String(new_password), 10);
+    await pool.query(
+      "UPDATE users SET password_hash=$1, reset_key=NULL, reset_key_expires=NULL WHERE username=$2",
+      [hash, username]);
+    await logAudit({ user: { hospital_id: username }, ip: req.ip },
+                   "change_password", "user", username, "เปลี่ยนรหัสผ่านด้วยคีย์");
+    res.json({ ok: true });
+  } catch (e) { next(e); }
 });
 
 // helper: คืน hospital_id ที่ผู้ใช้มีสิทธิ์เห็น

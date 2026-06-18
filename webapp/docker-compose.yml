@@ -53,7 +53,8 @@ services:
     depends_on:
       - backend
     ports:
-      - "8080:80"
+      - "8080:80"     # HTTP (redirect -> HTTPS)
+      - "8443:443"    # HTTPS (self-signed cert)
 
   # เทรน FedAvg ใหม่อัตโนมัติทุกวัน -> อัปเดต weight + snapshot -> สั่ง backend reseed
   retrainer:
