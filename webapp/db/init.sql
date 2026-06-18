@@ -32,6 +32,19 @@ CREATE TABLE IF NOT EXISTS weights (
     weight    DOUBLE PRECISION
 );
 
+-- Federated Learning: weight (coef+intercept) ที่แต่ละ รพ. ส่งกลับมาในแต่ละรอบ
+-- เก็บล่าสุด 1 แถวต่อ (รพ., freq) — ไม่มีข้อมูลดิบของคนไข้ มีแต่ค่า weight ที่ใส่ DP noise แล้ว
+CREATE TABLE IF NOT EXISTS fl_contributions (
+    hospital_id  TEXT NOT NULL,
+    freq         TEXT NOT NULL DEFAULT 'daily',   -- daily | weekly
+    n_samples    INTEGER NOT NULL,                -- จำนวนตัวอย่างที่ รพ. ใช้เทรน (ถ่วงน้ำหนัก FedAvg)
+    coef         JSONB NOT NULL,                  -- เวกเตอร์ coefficient (+DP noise)
+    intercept    DOUBLE PRECISION NOT NULL,
+    dp_sigma     DOUBLE PRECISION,                -- ระดับ noise ที่ รพ. ใช้ (โปร่งใส)
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (hospital_id, freq)
+);
+
 CREATE INDEX IF NOT EXISTS idx_forecasts_hospital ON forecasts(hospital_id);
 CREATE INDEX IF NOT EXISTS idx_forecasts_status ON forecasts(status);
 
@@ -45,6 +58,7 @@ CREATE TABLE IF NOT EXISTS users (
                   CHECK (role IN ('admin', 'hospital')),
     reset_key         TEXT,          -- คีย์ 4 หลักสำหรับเปลี่ยนรหัส (ออกโดย admin)
     reset_key_expires TIMESTAMPTZ,
+    last_seen         TIMESTAMPTZ,    -- heartbeat ล่าสุด (online ถ้าใกล้ปัจจุบัน) · NULL = offline/logout
     created_at    TIMESTAMPTZ DEFAULT now()
 );
 

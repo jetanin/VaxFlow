@@ -9,6 +9,8 @@ const ACTION_TH = {
   approve_borrow: "✅ อนุมัติ",
   reject_borrow: "❌ ปฏิเสธ",
   retrain_forecast: "🔄 อัปเดตพยากรณ์อัตโนมัติ",
+  fl_submit: "📡 รพ. ส่ง weight (FL)",
+  fl_aggregate: "🧮 รวม weight กลาง (FedAvg)",
   upload_signed: "⬆️ อัปโหลดเอกสารเซ็นแล้ว",
   issue_reset_key: "🔑 ออกคีย์เปลี่ยนรหัส",
   reset_password: "♻️ รีเซ็ตรหัสผ่าน",

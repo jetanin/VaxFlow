@@ -38,6 +38,17 @@ export default function App() {
       });
   }, [authed, freq]);
 
+  // คง online ไว้ตราบใดที่แท็บยังเปิด: heartbeat ทันที + ทุก 45 วินาที
+  // ปิดแท็บ (pagehide) → แจ้ง backend ว่า offline ทันที (token ใน sessionStorage หายเอง → ต้อง login ใหม่)
+  useEffect(() => {
+    if (!authed) return;
+    api.heartbeat().catch(() => {});
+    const hb = setInterval(() => api.heartbeat().catch(() => {}), 45000);
+    const onHide = () => auth.goOffline();
+    window.addEventListener("pagehide", onHide);
+    return () => { clearInterval(hb); window.removeEventListener("pagehide", onHide); };
+  }, [authed]);
+
   function changeFreq(v) {
     prefs.freq = v;       // ให้ api อ่านค่าใหม่
     setSummary(null);     // โหลดใหม่

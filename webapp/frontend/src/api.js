@@ -2,16 +2,18 @@
 const BASE = "/api";
 const TOKEN_KEY = "medcast_token";
 
+// ใช้ sessionStorage (ไม่ใช่ localStorage): token อยู่แค่ในแท็บนั้น
+// → ปิดแท็บ = token หาย = ต้อง login ใหม่ · refresh ในแท็บเดิม = token ยังอยู่
 export const auth = {
-  get token() { return localStorage.getItem(TOKEN_KEY); },
-  set token(v) { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); },
+  get token() { return sessionStorage.getItem(TOKEN_KEY); },
+  set token(v) { v ? sessionStorage.setItem(TOKEN_KEY, v) : sessionStorage.removeItem(TOKEN_KEY); },
   get hospital() {
-    const h = localStorage.getItem("medcast_hospital");
+    const h = sessionStorage.getItem("medcast_hospital");
     return h ? JSON.parse(h) : null;
   },
   set hospital(v) {
-    v ? localStorage.setItem("medcast_hospital", JSON.stringify(v))
-      : localStorage.removeItem("medcast_hospital");
+    v ? sessionStorage.setItem("medcast_hospital", JSON.stringify(v))
+      : sessionStorage.removeItem("medcast_hospital");
   },
   logout() { this.token = null; this.hospital = null; },
 };
@@ -48,6 +50,18 @@ export const api = {
   login: (username, password) =>
     req("/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   logoutServer: () => req("/logout", { method: "POST" }),
+  heartbeat: () => req("/heartbeat", { method: "POST" }),
+  // เรียกตอนปิดแท็บ (pagehide) — keepalive ให้ request ส่งจบแม้หน้ากำลังปิด
+  goOffline: () => {
+    if (!auth.token) return;
+    try {
+      fetch(`${BASE}/offline`, {
+        method: "POST",
+        keepalive: true,
+        headers: { Authorization: `Bearer ${auth.token}` },
+      });
+    } catch { /* best-effort */ }
+  },
   changePassword: (username, key, new_password) =>
     req("/change-password", { method: "POST", body: JSON.stringify({ username, key, new_password }) }),
   adminResetKey: (username) =>

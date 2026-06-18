@@ -144,6 +144,8 @@ MedCast_Secure/
 ├── scripts/
 │   ├── generate_hospital_data.py    # สร้างข้อมูลจำลอง 100 รพ. ครอบคลุม 77 จังหวัด
 │   ├── retrain.py                   # FedAvg+DP retrain (รายวัน/รายสัปดาห์) + reseed
+│   ├── fl_publish_spec.py           # เผยแพร่สเปกร่วม (ฟีเจอร์+scaler) -> models/fl_spec.json
+│   ├── fl_client.py                 # FL client: รพ. รันเอง -> เทรน+DP -> ส่ง weight กลับ
 │   ├── generate_stock_snapshot.py   # สร้างคลังยาปัจจุบัน (stock/reorder/expiry)
 │   ├── export_weights.py            # export weight เป็น CSV
 │   └── export_forecast_snapshot.py  # export snapshot พยากรณ์ (seed web app)

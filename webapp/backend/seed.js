@@ -35,12 +35,17 @@ async function ensureSchema() {
       status TEXT, confidence DOUBLE PRECISION, UNIQUE (hospital_id, drug, freq));
     ALTER TABLE forecasts ADD COLUMN IF NOT EXISTS freq TEXT NOT NULL DEFAULT 'daily';
     CREATE TABLE IF NOT EXISTS weights (feature TEXT PRIMARY KEY, weight DOUBLE PRECISION);
+    CREATE TABLE IF NOT EXISTS fl_contributions (
+      hospital_id TEXT NOT NULL, freq TEXT NOT NULL DEFAULT 'daily', n_samples INTEGER NOT NULL,
+      coef JSONB NOT NULL, intercept DOUBLE PRECISION NOT NULL, dp_sigma DOUBLE PRECISION,
+      submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (hospital_id, freq));
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
       hospital_id TEXT, role TEXT NOT NULL DEFAULT 'hospital', created_at TIMESTAMPTZ DEFAULT now());
     ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'hospital';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_key TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_key_expires TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS borrow_requests (
       id SERIAL PRIMARY KEY, from_hospital TEXT, to_hospital TEXT, drug TEXT NOT NULL,
       quantity DOUBLE PRECISION NOT NULL, reason TEXT,

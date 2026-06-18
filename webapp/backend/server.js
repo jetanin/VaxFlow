@@ -120,6 +120,81 @@ app.post("/api/reseed", async (req, res) => {
   }
 });
 
+// ===== Federated Learning round (รพ. ส่ง weight กลับ) =====
+// token ภายในเดียวกับ reseed (service-to-service ไม่ใช่ JWT ของผู้ใช้)
+function checkServiceToken(req) {
+  const token = req.headers["x-fl-token"] || req.headers["x-reseed-token"] || "";
+  return token === (process.env.FL_TOKEN || process.env.RESEED_TOKEN || "changeme");
+}
+
+// 1) รพ. ขอ "สเปกร่วม" (รายชื่อฟีเจอร์ + ค่า scaler ที่ตกลงร่วมกัน) เพื่อสเกลข้อมูลให้ตรงกันทุก รพ.
+//    เผยแพร่ไว้ที่ models/fl_spec.json (สร้างด้วย scripts/fl_publish_spec.py)
+app.get("/api/fl/spec", (req, res) => {
+  const freq = (req.query.freq || "daily").toLowerCase() === "weekly" ? "weekly" : "daily";
+  const file = path.join(process.env.SEED_DIR || path.resolve(__dirname, "../.."), "models", "fl_spec.json");
+  if (!fs.existsSync(file))
+    return res.status(503).json({ error: "ยังไม่มี fl_spec.json — รัน scripts/fl_publish_spec.py ก่อน" });
+  try {
+    const spec = JSON.parse(fs.readFileSync(file, "utf-8"));
+    if (!spec[freq]) return res.status(404).json({ error: `ไม่มีสเปกสำหรับ freq=${freq}` });
+    res.json(spec[freq]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 2) รพ. ส่ง weight (coef+intercept ที่ใส่ DP noise แล้ว) กลับมา — เก็บ 1 แถวล่าสุดต่อ (รพ., freq)
+app.post("/api/fl/submit", async (req, res) => {
+  if (!checkServiceToken(req)) return res.status(403).json({ error: "invalid FL token" });
+  const { hospital_id, freq = "daily", n_samples, coef, intercept, dp_sigma } = req.body || {};
+  if (!hospital_id || !Array.isArray(coef) || typeof intercept !== "number" || !n_samples)
+    return res.status(400).json({ error: "ต้องมี hospital_id, n_samples, coef[], intercept" });
+  try {
+    await pool.query(
+      `INSERT INTO fl_contributions (hospital_id, freq, n_samples, coef, intercept, dp_sigma, submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now())
+       ON CONFLICT (hospital_id, freq) DO UPDATE
+         SET n_samples=$3, coef=$4, intercept=$5, dp_sigma=$6, submitted_at=now()`,
+      [hospital_id, freq, n_samples, JSON.stringify(coef), intercept, dp_sigma ?? null]);
+    await logAudit({ user: { hospital_id }, ip: req.ip },
+                   "fl_submit", "weights", hospital_id, `ส่ง weight (${coef.length} ค่า, n=${n_samples}) freq=${freq}`);
+    res.json({ ok: true, received: coef.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 3) ศูนย์กลางรวม weight ทุก รพ. ด้วย FedAvg (เฉลี่ยถ่วงน้ำหนักตาม n_samples) -> เขียนลงตาราง weights
+app.post("/api/fl/aggregate", async (req, res) => {
+  if (!checkServiceToken(req)) return res.status(403).json({ error: "invalid FL token" });
+  const freq = (req.body && req.body.freq) === "weekly" ? "weekly" : "daily";
+  try {
+    const file = path.join(process.env.SEED_DIR || path.resolve(__dirname, "../.."), "models", "fl_spec.json");
+    if (!fs.existsSync(file)) return res.status(503).json({ error: "ยังไม่มี fl_spec.json" });
+    const features = JSON.parse(fs.readFileSync(file, "utf-8"))[freq].features;
+    const { rows } = await pool.query(
+      "SELECT n_samples, coef, intercept FROM fl_contributions WHERE freq=$1", [freq]);
+    if (rows.length === 0) return res.status(400).json({ error: "ยังไม่มี รพ. ส่ง weight เข้ามา" });
+
+    const total = rows.reduce((s, r) => s + r.n_samples, 0);
+    const dim = features.length;
+    const coef = new Array(dim).fill(0);
+    let intercept = 0;
+    for (const r of rows) {
+      const w = r.n_samples / total;                       // น้ำหนัก FedAvg
+      const c = Array.isArray(r.coef) ? r.coef : JSON.parse(r.coef);
+      for (let i = 0; i < dim; i++) coef[i] += w * (c[i] || 0);
+      intercept += w * r.intercept;
+    }
+    // เขียน weight กลางใหม่ลงตาราง weights (โมเดลที่แสดงใน Privacy Control)
+    await pool.query("DELETE FROM weights");
+    const values = features.map((f, i) => `($${2 * i + 1}, $${2 * i + 2})`).join(",");
+    const params = features.flatMap((f, i) => [f, Number(coef[i].toFixed(6))]);
+    await pool.query(`INSERT INTO weights (feature, weight) VALUES ${values}`, params);
+    await pool.query("INSERT INTO weights (feature, weight) VALUES ('__bias__', $1)",
+                     [Number(intercept.toFixed(6))]);
+    await logAudit({ user: { hospital_id: "admin" }, ip: req.ip },
+                   "fl_aggregate", "weights", freq, `FedAvg รวม ${rows.length} รพ. (${dim} ฟีเจอร์)`);
+    res.json({ ok: true, hospitals: rows.length, n_features: dim, freq });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // health check
 app.get("/api/health", async (_req, res) => {
   try {
@@ -220,19 +295,15 @@ app.get("/api/drugs", requireAuth, async (req, res, next) => {
 app.get("/api/privacy", requireAuth, requireAdmin, async (_req, res, next) => {
   try {
     const w = await pool.query("SELECT COUNT(*) AS n_weights FROM weights");
-    // online = "เหตุการณ์ล่าสุด" ของ รพ. เป็น login (ไม่ใช่ logout) และอยู่ภายใน 30 นาที
+    // online = ยังมี heartbeat ภายใน 2 นาที (เปิดแท็บค้างไว้ = online เรื่อย ๆ)
+    // logout / ปิดแท็บ → last_seen = NULL → offline ทันที
     const h = await pool.query(`
-      WITH ev AS (
-        SELECT actor, action, ts,
-               ROW_NUMBER() OVER (PARTITION BY actor ORDER BY ts DESC) AS rn
-        FROM audit_log WHERE action IN ('login', 'logout')
-      )
       SELECT h.hospital_id, h.name,
              (SELECT MAX(ts) FROM audit_log a
               WHERE a.actor = h.hospital_id AND a.action = 'login') AS last_login,
-             COALESCE(le.action = 'login' AND le.ts > now() - interval '30 minutes', false) AS online
+             COALESCE(u.last_seen > now() - interval '2 minutes', false) AS online
       FROM hospitals h
-      LEFT JOIN ev le ON le.actor = h.hospital_id AND le.rn = 1
+      LEFT JOIN users u ON u.hospital_id = h.hospital_id
       ORDER BY h.hospital_id`);
     res.json({
       federated_learning: "active",
@@ -269,7 +340,8 @@ app.post("/api/login", async (req, res, next) => {
       return res.status(401).json({ error: "username หรือ password ไม่ถูกต้อง" });
     }
     const name = user.role === "admin" ? "ผู้ดูแลระบบ (Admin)" : user.name;
-    const token = signToken({ hospital_id: user.hospital_id, role: user.role, name });
+    const token = signToken({ username: user.username, hospital_id: user.hospital_id, role: user.role, name });
+    await pool.query("UPDATE users SET last_seen=now() WHERE username=$1", [user.username]);
     await logAudit({ user: { hospital_id: user.hospital_id || "admin" }, ip: req.ip },
                    "login", "user", user.username, "เข้าสู่ระบบ");
     res.json({ token, hospital_id: user.hospital_id, role: user.role, name });
@@ -281,9 +353,25 @@ app.get("/api/me", requireAuth, (req, res) => {
   res.json({ hospital_id: req.user.hospital_id, role: req.user.role, name: req.user.name });
 });
 
-// ออกจากระบบ — บันทึก audit เพื่อให้สถานะเป็น offline ทันที
+// ออกจากระบบ — ล้าง last_seen (offline ทันที) + บันทึก audit
 app.post("/api/logout", requireAuth, async (req, res) => {
+  if (req.user.username)
+    await pool.query("UPDATE users SET last_seen=NULL WHERE username=$1", [req.user.username]);
   await logAudit(req, "logout", "user", req.user.hospital_id || "admin", "ออกจากระบบ");
+  res.json({ ok: true });
+});
+
+// heartbeat — ผู้ใช้ยังเปิดแท็บอยู่ → คง online (เรียกเป็นระยะจาก frontend)
+app.post("/api/heartbeat", requireAuth, async (req, res) => {
+  if (req.user.username)
+    await pool.query("UPDATE users SET last_seen=now() WHERE username=$1", [req.user.username]);
+  res.json({ ok: true });
+});
+
+// ปิดแท็บ — beacon จาก frontend (pagehide) → offline ทันที (ไม่บันทึก audit เพื่อเลี่ยง noise ตอน refresh)
+app.post("/api/offline", requireAuth, async (req, res) => {
+  if (req.user.username)
+    await pool.query("UPDATE users SET last_seen=NULL WHERE username=$1", [req.user.username]);
   res.json({ ok: true });
 });
 
