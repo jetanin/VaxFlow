@@ -187,22 +187,27 @@ app.get("/api/vaccines", requireAuth, async (req, res, next) => {
   try {
     const scope = scopedHospital(req);
     const params = [];
-    let where = "";
-    if (scope) { params.push(scope); where = `WHERE hospital_id=$${params.length}`; }
+    // กรอง รพ. ใน ON clause (ไม่ใช่ WHERE) เพื่อคง "วัคซีนครบทุกตัวใน master"
+    // แม้สาขานั้นจะไม่มีขวด (LEFT JOIN จาก vaccine_product → ได้ครบตาม vaccine_merged_with_storage)
+    let join = "";
+    if (scope) { params.push(scope); join = ` AND v.hospital_id = $${params.length}`; }
     const { rows } = await pool.query(`
-      SELECT product_id,
-             MAX(product_name)                           AS product_name,
-             MAX(product_type)                           AS product_type,
-             COUNT(DISTINCT hospital_id)                 AS hospitals,
-             COUNT(*)                                    AS n_vials,
-             SUM(doses_remaining)                        AS total_doses,
-             COUNT(*) FILTER (WHERE state='OPENED')      AS opened_vials,
-             COUNT(*) FILTER (WHERE status='red')        AS n_red,
-             COUNT(*) FILTER (WHERE status='yellow')     AS n_yellow,
-             COUNT(*) FILTER (WHERE status='green')      AS n_green
-      FROM vaccine_vial_status ${where}
-      GROUP BY product_id
-      ORDER BY n_red DESC, total_doses DESC`, params);
+      SELECT p.product_id,
+             p.name                                      AS product_name,
+             p.type                                      AS product_type,
+             p.doses_per_vial,
+             COUNT(DISTINCT v.hospital_id)               AS hospitals,
+             COUNT(v.vial_id)                            AS n_vials,
+             COALESCE(SUM(v.doses_remaining), 0)         AS total_doses,
+             COUNT(*) FILTER (WHERE v.state='OPENED')    AS opened_vials,
+             COUNT(*) FILTER (WHERE v.status='red')      AS n_red,
+             COUNT(*) FILTER (WHERE v.status='yellow')   AS n_yellow,
+             COUNT(*) FILTER (WHERE v.status='green')    AS n_green
+      FROM vaccine_product p
+      LEFT JOIN vaccine_vial_status v
+        ON v.product_id = p.product_id${join}
+      GROUP BY p.product_id, p.name, p.type, p.doses_per_vial
+      ORDER BY n_red DESC, total_doses DESC, p.product_id`, params);
     res.json(rows);
   } catch (e) { next(e); }
 });
