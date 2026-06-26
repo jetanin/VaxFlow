@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, CircleMarker, Tooltip } from "react-leaflet";
 import Pagination, { usePaged } from "./Pagination.jsx";
 
 const COLOR = { green: "#2ecc71", yellow: "#f1c40f", red: "#e74c3c" };
-const STATUS_TH = { green: "🟢 เพียงพอ", yellow: "🟡 ใกล้หมด", red: "🔴 ขาดแคลน" };
+const STATUS_TH = { green: "🟢 ปกติ", yellow: "🟡 ใกล้หมดอายุ", red: "🔴 วิกฤต" };
 
 export default function OverviewMap({ hospitals }) {
   const [q, setQ] = useState("");
@@ -28,16 +28,16 @@ export default function OverviewMap({ hospitals }) {
 
   return (
     <div className="panel">
-      <h2>🗺️ Overview Map — ตำแหน่งโรงพยาบาลและสถานะยา</h2>
+      <h2>🗺️ Overview Map — ตำแหน่งโรงพยาบาลและสถานะวัคซีน</h2>
 
       <div className="filterbar">
         <input className="search" placeholder="🔍 ค้นหาโรงพยาบาล (ชื่อ / รหัส)"
                value={q} onChange={(e) => setQ(e.target.value)} />
         <select value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="all">ทุกสถานะ</option>
-          <option value="red">🔴 ขาดแคลน</option>
-          <option value="yellow">🟡 ใกล้หมด</option>
-          <option value="green">🟢 เพียงพอ</option>
+          <option value="red">🔴 วิกฤต</option>
+          <option value="yellow">🟡 ใกล้หมดอายุ</option>
+          <option value="green">🟢 ปกติ</option>
         </select>
         <span className="muted">{filtered.length}/{hospitals.length} แห่ง</span>
       </div>
@@ -57,7 +57,7 @@ export default function OverviewMap({ hospitals }) {
             <Tooltip>
               <b>{h.name}</b> ({h.hospital_id})<br />
               สถานะ: {STATUS_TH[h.worst_status]}<br />
-              🔴 {h.n_red} · 🟡 {h.n_yellow} · Confidence {Math.round(h.avg_confidence * 100)}%
+              🔴 {h.n_red} · 🟡 {h.n_yellow} · {Number(h.total_doses).toLocaleString()} โดส
             </Tooltip>
           </CircleMarker>
         ))}
@@ -65,7 +65,7 @@ export default function OverviewMap({ hospitals }) {
 
       <table style={{ marginTop: 14 }}>
         <thead>
-          <tr><th>รหัส</th><th>โรงพยาบาล</th><th>สถานะรวม</th><th>ยาขาด</th><th>ใกล้หมด</th><th>Confidence</th></tr>
+          <tr><th>รหัส</th><th>โรงพยาบาล</th><th>สถานะรวม</th><th>🔴 วิกฤต</th><th>🟡 ใกล้หมดอายุ</th><th>โดสคงคลัง</th></tr>
         </thead>
         <tbody>
           {paged.slice.map((h) => (
@@ -75,7 +75,7 @@ export default function OverviewMap({ hospitals }) {
               <td><span className={`badge ${h.worst_status}`}>{STATUS_TH[h.worst_status]}</span></td>
               <td>{h.n_red}</td>
               <td>{h.n_yellow}</td>
-              <td>{Math.round(h.avg_confidence * 100)}%</td>
+              <td>{Number(h.total_doses).toLocaleString()}</td>
             </tr>
           ))}
           {filtered.length === 0 && (

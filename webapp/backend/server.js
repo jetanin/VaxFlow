@@ -74,21 +74,6 @@ async function ipLocation(ip) {
   return IP_GEO === "ipapi" ? viaIpApi(clean) : viaMaxmind(clean);
 }
 
-// นำสต็อกใหม่มาคำนวณ days-of-supply + สถานะสีใหม่ (real-time refresh หลังมีข้อมูลใหม่)
-async function recomputeForecast(hospitalId, drug) {
-  // อัปเดตทั้งแถว daily และ weekly: อัตราใช้ต่อวัน = pred (daily) หรือ pred/7 (weekly)
-  await pool.query(
-    `UPDATE forecasts
-     SET days_of_supply = ROUND((stock_on_hand /
-           GREATEST(pred_next_day / (CASE WHEN freq='weekly' THEN 7.0 ELSE 1.0 END), 0.1))::numeric, 1),
-         status = CASE
-           WHEN stock_on_hand / GREATEST(pred_next_day / (CASE WHEN freq='weekly' THEN 7.0 ELSE 1.0 END), 0.1) >= 14 THEN 'green'
-           WHEN stock_on_hand / GREATEST(pred_next_day / (CASE WHEN freq='weekly' THEN 7.0 ELSE 1.0 END), 0.1) >= 4  THEN 'yellow'
-           ELSE 'red' END
-     WHERE hospital_id = $1 AND drug = $2`,
-    [hospitalId, drug]);
-}
-
 // บันทึก Audit Trail (timestamp + IP + ตำแหน่ง) — best-effort ไม่ให้ล้มทั้ง request
 async function logAudit(req, action, entity, entityId, detail) {
   try {
@@ -104,7 +89,7 @@ async function logAudit(req, action, entity, entityId, detail) {
   }
 }
 
-// reseed: โหลดข้อมูลใหม่จาก CSV เข้า Postgres (เรียกโดย retrainer หลังเทรนรายวัน)
+// reseed: โหลดข้อมูลใหม่จาก CSV เข้า Postgres (เรียกแบบ manual หลังอัปเดตข้อมูล)
 // ป้องกันด้วย token ภายใน (ไม่ใช่ JWT) เพราะเป็น service-to-service
 app.post("/api/reseed", async (req, res) => {
   const token = req.headers["x-reseed-token"] || "";
@@ -120,81 +105,6 @@ app.post("/api/reseed", async (req, res) => {
   }
 });
 
-// ===== Federated Learning round (รพ. ส่ง weight กลับ) =====
-// token ภายในเดียวกับ reseed (service-to-service ไม่ใช่ JWT ของผู้ใช้)
-function checkServiceToken(req) {
-  const token = req.headers["x-fl-token"] || req.headers["x-reseed-token"] || "";
-  return token === (process.env.FL_TOKEN || process.env.RESEED_TOKEN || "changeme");
-}
-
-// 1) รพ. ขอ "สเปกร่วม" (รายชื่อฟีเจอร์ + ค่า scaler ที่ตกลงร่วมกัน) เพื่อสเกลข้อมูลให้ตรงกันทุก รพ.
-//    เผยแพร่ไว้ที่ models/fl_spec.json (สร้างด้วย scripts/fl_publish_spec.py)
-app.get("/api/fl/spec", (req, res) => {
-  const freq = (req.query.freq || "daily").toLowerCase() === "weekly" ? "weekly" : "daily";
-  const file = path.join(process.env.SEED_DIR || path.resolve(__dirname, "../.."), "models", "fl_spec.json");
-  if (!fs.existsSync(file))
-    return res.status(503).json({ error: "ยังไม่มี fl_spec.json — รัน scripts/fl_publish_spec.py ก่อน" });
-  try {
-    const spec = JSON.parse(fs.readFileSync(file, "utf-8"));
-    if (!spec[freq]) return res.status(404).json({ error: `ไม่มีสเปกสำหรับ freq=${freq}` });
-    res.json(spec[freq]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// 2) รพ. ส่ง weight (coef+intercept ที่ใส่ DP noise แล้ว) กลับมา — เก็บ 1 แถวล่าสุดต่อ (รพ., freq)
-app.post("/api/fl/submit", async (req, res) => {
-  if (!checkServiceToken(req)) return res.status(403).json({ error: "invalid FL token" });
-  const { hospital_id, freq = "daily", n_samples, coef, intercept, dp_sigma } = req.body || {};
-  if (!hospital_id || !Array.isArray(coef) || typeof intercept !== "number" || !n_samples)
-    return res.status(400).json({ error: "ต้องมี hospital_id, n_samples, coef[], intercept" });
-  try {
-    await pool.query(
-      `INSERT INTO fl_contributions (hospital_id, freq, n_samples, coef, intercept, dp_sigma, submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6, now())
-       ON CONFLICT (hospital_id, freq) DO UPDATE
-         SET n_samples=$3, coef=$4, intercept=$5, dp_sigma=$6, submitted_at=now()`,
-      [hospital_id, freq, n_samples, JSON.stringify(coef), intercept, dp_sigma ?? null]);
-    await logAudit({ user: { hospital_id }, ip: req.ip },
-                   "fl_submit", "weights", hospital_id, `ส่ง weight (${coef.length} ค่า, n=${n_samples}) freq=${freq}`);
-    res.json({ ok: true, received: coef.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// 3) ศูนย์กลางรวม weight ทุก รพ. ด้วย FedAvg (เฉลี่ยถ่วงน้ำหนักตาม n_samples) -> เขียนลงตาราง weights
-app.post("/api/fl/aggregate", async (req, res) => {
-  if (!checkServiceToken(req)) return res.status(403).json({ error: "invalid FL token" });
-  const freq = (req.body && req.body.freq) === "weekly" ? "weekly" : "daily";
-  try {
-    const file = path.join(process.env.SEED_DIR || path.resolve(__dirname, "../.."), "models", "fl_spec.json");
-    if (!fs.existsSync(file)) return res.status(503).json({ error: "ยังไม่มี fl_spec.json" });
-    const features = JSON.parse(fs.readFileSync(file, "utf-8"))[freq].features;
-    const { rows } = await pool.query(
-      "SELECT n_samples, coef, intercept FROM fl_contributions WHERE freq=$1", [freq]);
-    if (rows.length === 0) return res.status(400).json({ error: "ยังไม่มี รพ. ส่ง weight เข้ามา" });
-
-    const total = rows.reduce((s, r) => s + r.n_samples, 0);
-    const dim = features.length;
-    const coef = new Array(dim).fill(0);
-    let intercept = 0;
-    for (const r of rows) {
-      const w = r.n_samples / total;                       // น้ำหนัก FedAvg
-      const c = Array.isArray(r.coef) ? r.coef : JSON.parse(r.coef);
-      for (let i = 0; i < dim; i++) coef[i] += w * (c[i] || 0);
-      intercept += w * r.intercept;
-    }
-    // เขียน weight กลางใหม่ลงตาราง weights (โมเดลที่แสดงใน Privacy Control)
-    await pool.query("DELETE FROM weights");
-    const values = features.map((f, i) => `($${2 * i + 1}, $${2 * i + 2})`).join(",");
-    const params = features.flatMap((f, i) => [f, Number(coef[i].toFixed(6))]);
-    await pool.query(`INSERT INTO weights (feature, weight) VALUES ${values}`, params);
-    await pool.query("INSERT INTO weights (feature, weight) VALUES ('__bias__', $1)",
-                     [Number(intercept.toFixed(6))]);
-    await logAudit({ user: { hospital_id: "admin" }, ip: req.ip },
-                   "fl_aggregate", "weights", freq, `FedAvg รวม ${rows.length} รพ. (${dim} ฟีเจอร์)`);
-    res.json({ ok: true, hospitals: rows.length, n_features: dim, freq });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // health check
 app.get("/api/health", async (_req, res) => {
   try {
@@ -205,23 +115,24 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
-// รายชื่อโรงพยาบาล + สถานะรวม (แย่สุดในบรรดายา) สำหรับ Overview Map
+// รายชื่อโรงพยาบาล + สถานะรวม (แย่สุดในบรรดาขวดวัคซีน) สำหรับ Overview Map
 app.get("/api/hospitals", requireAuth, async (req, res, next) => {
   try {
     const scope = scopedHospital(req);
-    const params = [freqOf(req)];
+    const params = [];
     let where = "";
     if (scope) { params.push(scope); where = `WHERE h.hospital_id = $${params.length}`; }
     const { rows } = await pool.query(`
       SELECT h.hospital_id, h.name, h.latitude, h.longitude, h.lead_time_days,
-             COUNT(*) FILTER (WHERE f.status='red')    AS n_red,
-             COUNT(*) FILTER (WHERE f.status='yellow') AS n_yellow,
-             ROUND(AVG(f.confidence)::numeric, 3)      AS avg_confidence,
-             CASE WHEN COUNT(*) FILTER (WHERE f.status='red')>0 THEN 'red'
-                  WHEN COUNT(*) FILTER (WHERE f.status='yellow')>0 THEN 'yellow'
-                  ELSE 'green' END                     AS worst_status
+             COUNT(v.vial_id)                            AS n_vials,
+             COALESCE(SUM(v.doses_remaining), 0)         AS total_doses,
+             COUNT(*) FILTER (WHERE v.status='red')      AS n_red,
+             COUNT(*) FILTER (WHERE v.status='yellow')   AS n_yellow,
+             CASE WHEN COUNT(*) FILTER (WHERE v.status='red')>0 THEN 'red'
+                  WHEN COUNT(*) FILTER (WHERE v.status='yellow')>0 THEN 'yellow'
+                  ELSE 'green' END                       AS worst_status
       FROM hospitals h
-      LEFT JOIN forecasts f ON f.hospital_id = h.hospital_id AND f.freq = $1
+      LEFT JOIN vaccine_vial_status v ON v.hospital_id = h.hospital_id
       ${where}
       GROUP BY h.hospital_id
       ORDER BY h.hospital_id`, params);
@@ -229,98 +140,69 @@ app.get("/api/hospitals", requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// พยากรณ์ทั้งหมด (กรองด้วย ?hospital_id= / ?status= ได้)
-app.get("/api/forecasts", requireAuth, async (req, res, next) => {
+// ขวดวัคซีนทั้งหมด (กรองด้วย ?hospital_id= / ?status= ได้) — เรียงตามอายุที่เหลือ
+app.get("/api/vials", requireAuth, async (req, res, next) => {
   try {
     const { status } = req.query;
     const scope = scopedHospital(req);  // hospital role -> บังคับ รพ.ตัวเอง
-    const params = [freqOf(req)];
-    const where = ["freq=$1"];
+    const params = [];
+    const where = [];
     if (scope) { params.push(scope); where.push(`hospital_id=$${params.length}`); }
     if (status) { params.push(status); where.push(`status=$${params.length}`); }
-    const clause = `WHERE ${where.join(" AND ")}`;
+    const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const { rows } = await pool.query(
-      `SELECT hospital_id, drug, desc_th, last_date, pred_next_day, stock_on_hand,
-              reorder_point, expiry_date, days_of_supply, status, confidence
-       FROM forecasts ${clause}
-       ORDER BY days_of_supply ASC NULLS FIRST`, params);
+      `SELECT vial_id, lot_id, hospital_id, product_id, product_name, product_type,
+              state, state_since, doses_remaining, doses_per_vial, label_expiry,
+              effective_expiry, ROUND(days_remaining::numeric, 2) AS days_remaining,
+              transportable, status
+       FROM vaccine_vial_status ${clause}
+       ORDER BY days_remaining ASC NULLS FIRST`, params);
     res.json(rows);
   } catch (e) { next(e); }
 });
 
-// KPI สรุปภาพรวม
+// KPI สรุปภาพรวม (นับระดับขวด)
 app.get("/api/summary", requireAuth, async (req, res, next) => {
   try {
     const scope = scopedHospital(req);
-    const fParams = [freqOf(req)];
-    let fWhere = "WHERE freq=$1";
-    if (scope) { fParams.push(scope); fWhere += ` AND hospital_id=$${fParams.length}`; }
+    const vParams = [];
+    let vWhere = "";
+    if (scope) { vParams.push(scope); vWhere = `WHERE hospital_id=$${vParams.length}`; }
     const hCount = await pool.query(
       `SELECT COUNT(*) AS c FROM hospitals ${scope ? "WHERE hospital_id=$1" : ""}`,
       scope ? [scope] : []);
     const agg = await pool.query(`
-      SELECT COUNT(*) FILTER (WHERE status='red')    AS red_items,
-             COUNT(*) FILTER (WHERE status='yellow') AS yellow_items,
-             COUNT(*) FILTER (WHERE status='green')  AS green_items,
-             ROUND(AVG(confidence)::numeric, 3)      AS avg_confidence
-      FROM forecasts ${fWhere}`, fParams);
+      SELECT COUNT(*) FILTER (WHERE status='red')        AS red_items,
+             COUNT(*) FILTER (WHERE status='yellow')     AS yellow_items,
+             COUNT(*) FILTER (WHERE status='green')      AS green_items,
+             COUNT(*) FILTER (WHERE state='OPENED')      AS opened_vials,
+             COALESCE(SUM(doses_remaining), 0)           AS total_doses
+      FROM vaccine_vial_status ${vWhere}`, vParams);
     res.json({ hospitals: hCount.rows[0].c, ...agg.rows[0] });
   } catch (e) { next(e); }
 });
 
-// คลังยาทั้งหมดในระบบ (รวมทุกกลุ่มยา) — admin เห็นทุก รพ., hospital เห็นเฉพาะตัวเอง
-app.get("/api/drugs", requireAuth, async (req, res, next) => {
+// คลังวัคซีนรวมทุกผลิตภัณฑ์ — admin เห็นทุก รพ., hospital เห็นเฉพาะตัวเอง
+app.get("/api/vaccines", requireAuth, async (req, res, next) => {
   try {
     const scope = scopedHospital(req);
-    const params = [freqOf(req)];
-    let where = "WHERE freq=$1";
-    if (scope) { params.push(scope); where += ` AND hospital_id=$${params.length}`; }
+    const params = [];
+    let where = "";
+    if (scope) { params.push(scope); where = `WHERE hospital_id=$${params.length}`; }
     const { rows } = await pool.query(`
-      SELECT drug,
-             MAX(desc_th)                                AS desc_th,
+      SELECT product_id,
+             MAX(product_name)                           AS product_name,
+             MAX(product_type)                           AS product_type,
              COUNT(DISTINCT hospital_id)                 AS hospitals,
-             SUM(stock_on_hand)                          AS total_stock,
-             ROUND(AVG(days_of_supply)::numeric, 1)      AS avg_days,
+             COUNT(*)                                    AS n_vials,
+             SUM(doses_remaining)                        AS total_doses,
+             COUNT(*) FILTER (WHERE state='OPENED')      AS opened_vials,
              COUNT(*) FILTER (WHERE status='red')        AS n_red,
              COUNT(*) FILTER (WHERE status='yellow')     AS n_yellow,
              COUNT(*) FILTER (WHERE status='green')      AS n_green
-      FROM forecasts ${where}
-      GROUP BY drug
-      ORDER BY n_red DESC, avg_days ASC`, params);
-    res.json(rows);
-  } catch (e) { next(e); }
-});
-
-// ศูนย์ควบคุมความเป็นส่วนตัว: จำนวน weight ที่ส่ง + รายชื่อ รพ.
-app.get("/api/privacy", requireAuth, requireAdmin, async (_req, res, next) => {
-  try {
-    const w = await pool.query("SELECT COUNT(*) AS n_weights FROM weights");
-    // online = ยังมี heartbeat ภายใน 2 นาที (เปิดแท็บค้างไว้ = online เรื่อย ๆ)
-    // logout / ปิดแท็บ → last_seen = NULL → offline ทันที
-    const h = await pool.query(`
-      SELECT h.hospital_id, h.name,
-             (SELECT MAX(ts) FROM audit_log a
-              WHERE a.actor = h.hospital_id AND a.action = 'login') AS last_login,
-             COALESCE(u.last_seen > now() - interval '2 minutes', false) AS online
-      FROM hospitals h
-      LEFT JOIN users u ON u.hospital_id = h.hospital_id
-      ORDER BY h.hospital_id`);
-    res.json({
-      federated_learning: "active",
-      differential_privacy: { enabled: true, sigma: 0.1 },
-      transport: "TLS/SSL",
-      secure_aggregation: true,
-      n_weights: parseInt(w.rows[0].n_weights, 10),
-      online_count: h.rows.filter((r) => r.online).length,
-      hospitals: h.rows,
-    });
-  } catch (e) { next(e); }
-});
-
-// weight กลาง (โมเดลที่ส่งข้ามเครือข่าย)
-app.get("/api/weights", requireAuth, requireAdmin, async (_req, res, next) => {
-  try {
-    const { rows } = await pool.query("SELECT feature, weight FROM weights ORDER BY ABS(weight) DESC");
+      FROM vaccine_vial_status ${where}
+      GROUP BY product_id
+      ORDER BY n_red DESC, total_doses DESC`, params);
     res.json(rows);
   } catch (e) { next(e); }
 });
@@ -375,7 +257,7 @@ app.post("/api/offline", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-const RESET_PW = process.env.DEFAULT_PASSWORD || "medcast123";
+const RESET_PW = process.env.DEFAULT_PASSWORD || "vaxflow123";
 
 // admin: ออกคีย์ 4 หลักให้ รพ. ไปใช้เปลี่ยนรหัส (หมดอายุใน 1 ชม.)
 app.post("/api/admin/reset-key", requireAuth, requireAdmin, async (req, res, next) => {
@@ -391,7 +273,7 @@ app.post("/api/admin/reset-key", requireAuth, requireAdmin, async (req, res, nex
   } catch (e) { next(e); }
 });
 
-// admin: รีเซ็ตรหัสผ่านกลับเป็นค่าตั้งต้น (medcast123)
+// admin: รีเซ็ตรหัสผ่านกลับเป็นค่าตั้งต้น (vaxflow123)
 app.post("/api/admin/reset-password", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const { username } = req.body || {};
@@ -438,63 +320,64 @@ function scopedHospital(req) {
   return req.user.hospital_id;
 }
 
-// granularity ที่เลือก: daily (default) | weekly
-function freqOf(req) {
-  return req.query.freq === "weekly" ? "weekly" : "daily";
-}
-
-// ---------- BORROW (ยืมยา) ----------
-// รพ. ที่ให้ยืมยา drug ได้ = สถานะ 🟢 (เหลือ ≥14 วัน) — เรียงตามระยะทาง GPS ใกล้สุด (Smart Borrowing)
+// ---------- BORROW (ยืมวัคซีน) ----------
+// รพ. ที่ให้ยืมวัคซีนได้ = มีขวด "ขนส่งได้" (ไม่ใช่ OPENED) สถานะ 🟢 — เรียงตามระยะทาง GPS ใกล้สุด
+// (Smart Borrowing เดิม — Predictive Matching Engine จริงจะเข้ามาแทนใน Phase 3)
 app.get("/api/lenders", requireAuth, async (req, res, next) => {
   try {
-    const { drug } = req.query;
+    const { product_id } = req.query;
     const { rows } = await pool.query(
       `WITH me AS (SELECT latitude AS lat, longitude AS lon
                    FROM hospitals WHERE hospital_id = $2)
-       SELECT f.hospital_id, h.name, f.status, f.days_of_supply, f.stock_on_hand,
-              GREATEST(0, f.stock_on_hand - f.reorder_point) AS surplus,
+       SELECT v.hospital_id, h.name,
+              COUNT(*)                  AS green_vials,
+              SUM(v.doses_remaining)    AS surplus_doses,
               ROUND((6371 * acos(greatest(-1, least(1,
                 cos(radians(me.lat)) * cos(radians(h.latitude)) *
                 cos(radians(h.longitude) - radians(me.lon)) +
                 sin(radians(me.lat)) * sin(radians(h.latitude))))))::numeric, 1) AS distance_km
-       FROM forecasts f
-       JOIN hospitals h ON h.hospital_id = f.hospital_id, me
-       WHERE f.drug = $1 AND f.freq = 'daily' AND f.status = 'green' AND f.hospital_id <> $2
+       FROM vaccine_vial_status v
+       JOIN hospitals h ON h.hospital_id = v.hospital_id, me
+       WHERE v.product_id = $1 AND v.status = 'green' AND v.transportable
+         AND v.hospital_id <> $2
+       GROUP BY v.hospital_id, h.name, me.lat, me.lon
        ORDER BY distance_km ASC`,
-      [drug, req.user.hospital_id]);
+      [product_id, req.user.hospital_id]);
     res.json(rows);
   } catch (e) { next(e); }
 });
 
-// สร้างคำขอยืมยา — อนุญาตเฉพาะยาที่ \"สถานะแดง\" ของโรงพยาบาลผู้ขอ
+// สร้างคำขอยืมวัคซีน — ผู้ขอต้องมีขวดสถานะ 🔴 (ใกล้หมดอายุ/ขาดแคลน) ของผลิตภัณฑ์นั้น
 app.post("/api/borrow", requireAuth, async (req, res, next) => {
   try {
     const from = req.user.hospital_id;
-    const { to_hospital, drug, quantity, reason } = req.body || {};
-    if (!to_hospital || !drug || !quantity) {
-      return res.status(400).json({ error: "กรอก to_hospital / drug / quantity ให้ครบ" });
+    const { to_hospital, product_id, quantity, reason } = req.body || {};
+    if (!to_hospital || !product_id || !quantity) {
+      return res.status(400).json({ error: "กรอก to_hospital / product_id / quantity ให้ครบ" });
     }
     if (to_hospital === from) return res.status(400).json({ error: "ยืมจากโรงพยาบาลตัวเองไม่ได้" });
 
     const chk = await pool.query(
-      "SELECT status FROM forecasts WHERE hospital_id=$1 AND drug=$2 AND freq='daily'", [from, drug]);
-    if (!chk.rows[0]) return res.status(400).json({ error: "ไม่พบยานี้ในระบบของโรงพยาบาล" });
-    if (chk.rows[0].status !== "red") {
-      return res.status(403).json({ error: "ยืมยาได้เฉพาะรายการที่สถานะ 🔴 ขาดแคลนเท่านั้น" });
+      `SELECT COUNT(*) FILTER (WHERE status='red') AS n_red
+       FROM vaccine_vial_status WHERE hospital_id=$1 AND product_id=$2`, [from, product_id]);
+    if (parseInt(chk.rows[0].n_red, 10) === 0) {
+      return res.status(403).json({ error: "ยืมได้เฉพาะวัคซีนที่โรงพยาบาลมีสถานะ 🔴 ขาดแคลน/ใกล้หมดอายุ" });
     }
-    // ผู้ให้ยืมต้องมียาตัวนี้สถานะ 🟢 (โซนปลอดภัย ≥14 วัน)
+    // ผู้ให้ยืมต้องมีขวด 🟢 ที่ "ขนส่งได้" (ไม่ใช่ OPENED) ของผลิตภัณฑ์นี้
     const lend = await pool.query(
-      "SELECT status FROM forecasts WHERE hospital_id=$1 AND drug=$2 AND freq='daily'", [to_hospital, drug]);
-    if (!lend.rows[0] || lend.rows[0].status !== "green") {
-      return res.status(403).json({ error: "โรงพยาบาลผู้ให้ยืมต้องมียานี้สถานะ 🟢 (เหลือ ≥14 วัน)" });
+      `SELECT COUNT(*) AS n FROM vaccine_vial_status
+       WHERE hospital_id=$1 AND product_id=$2 AND status='green' AND transportable`,
+      [to_hospital, product_id]);
+    if (parseInt(lend.rows[0].n, 10) === 0) {
+      return res.status(403).json({ error: "โรงพยาบาลผู้ให้ยืมต้องมีขวด 🟢 ที่ขนส่งได้ (ไม่ใช่ขวดที่เปิดแล้ว)" });
     }
 
     const { rows } = await pool.query(
-      `INSERT INTO borrow_requests (from_hospital, to_hospital, drug, quantity, reason)
+      `INSERT INTO borrow_requests (from_hospital, to_hospital, product_id, quantity, reason)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [from, to_hospital, drug, parseFloat(quantity), reason || null]);
+      [from, to_hospital, product_id, parseFloat(quantity), reason || null]);
     await logAudit(req, "create_borrow", "borrow_request", rows[0].id,
-                   `ขอยืม ${drug} จำนวน ${quantity} จาก ${to_hospital}`);
+                   `ขอยืม ${product_id} จำนวน ${quantity} โดส จาก ${to_hospital}`);
     res.status(201).json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -537,22 +420,7 @@ app.patch("/api/borrow/:id", requireAuth, async (req, res, next) => {
       "UPDATE borrow_requests SET status=$1 WHERE id=$2 RETURNING *", [status, req.params.id]);
     await logAudit(req, status === "approved" ? "approve_borrow" : "reject_borrow",
                    "borrow_request", req.params.id,
-                   `${status === "approved" ? "อนุมัติ" : "ปฏิเสธ"}คำขอ #${req.params.id} (${rows[0].drug})`);
-
-    // เมื่ออนุมัติ -> โอนสต็อก แล้วนำข้อมูลใหม่มาคำนวณพยากรณ์/สถานะใหม่อัตโนมัติ
-    if (status === "approved") {
-      const b = rows[0];
-      await pool.query(  // ผู้ให้ยืม (to_hospital) สต็อกลดลง
-        "UPDATE forecasts SET stock_on_hand = GREATEST(0, stock_on_hand - $1) WHERE hospital_id=$2 AND drug=$3",
-        [b.quantity, b.to_hospital, b.drug]);
-      await pool.query(  // ผู้ขอยืม (from_hospital) สต็อกเพิ่มขึ้น
-        "UPDATE forecasts SET stock_on_hand = stock_on_hand + $1 WHERE hospital_id=$2 AND drug=$3",
-        [b.quantity, b.from_hospital, b.drug]);
-      await recomputeForecast(b.to_hospital, b.drug);
-      await recomputeForecast(b.from_hospital, b.drug);
-      await logAudit(req, "retrain_forecast", "forecast", b.drug,
-                     `อัปเดตพยากรณ์อัตโนมัติหลังโอนยา ${b.drug} ${b.quantity} หน่วย: ${b.to_hospital} → ${b.from_hospital}`);
-    }
+                   `${status === "approved" ? "อนุมัติ" : "ปฏิเสธ"}คำขอ #${req.params.id} (${rows[0].product_id})`);
     res.json(rows[0]);
   } catch (e) { next(e); }
 });
@@ -615,40 +483,41 @@ app.get("/api/audit", requireAuth, requireAdmin, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ---------- ALERTS (Expiry/FEFO + Reorder + Shortage) ----------
+// ---------- ALERTS (อายุขัยวัคซีน: ใกล้หมดอายุ + ขวดที่เปิดแล้ว + ขาดแคลน) ----------
 app.get("/api/alerts", requireAuth, async (req, res, next) => {
   try {
     const scope = scopedHospital(req);   // admin -> null = ทุก รพ.
-    const expiryDays = parseInt(req.query.expiry_days || "120", 10);
-    const base = [freqOf(req)];          // freq filter (อย่างน้อยเสมอ)
-    let cond = "freq=$1";
-    if (scope) { base.push(scope); cond += ` AND hospital_id=$${base.length}`; }
+    const expiryDays = parseInt(req.query.expiry_days || "21", 10);
+    const params = [];
+    let cond = "";
+    if (scope) { params.push(scope); cond = ` AND hospital_id=$${params.length}`; }
 
-    // FEFO: ใกล้หมดอายุก่อน (รวมที่หมดอายุแล้ว) — เรียงตามวันหมดอายุ
+    // ใกล้หมดอายุตามอายุขัยจริง (effective_expiry) — รวมที่หมดอายุแล้ว
     const expiring = await pool.query(
-      `SELECT hospital_id, drug, desc_th, stock_on_hand, expiry_date,
-              (expiry_date - CURRENT_DATE) AS days_to_expiry
-       FROM forecasts
-       WHERE ${cond} AND expiry_date IS NOT NULL
-         AND (expiry_date - CURRENT_DATE) <= $${base.length + 1}
-       ORDER BY expiry_date ASC`, [...base, expiryDays]);
+      `SELECT vial_id, hospital_id, product_id, product_name, state, doses_remaining,
+              effective_expiry, ROUND(days_remaining::numeric, 2) AS days_remaining, status
+       FROM vaccine_vial_status
+       WHERE days_remaining <= $${params.length + 1}${cond}
+       ORDER BY days_remaining ASC`, [...params, expiryDays]);
 
-    // ต่ำกว่าจุดสั่งซื้อ (reorder point)
-    const reorder = await pool.query(
-      `SELECT hospital_id, drug, desc_th, stock_on_hand, reorder_point, days_of_supply, status
-       FROM forecasts
-       WHERE ${cond} AND stock_on_hand <= reorder_point
-       ORDER BY (stock_on_hand - reorder_point) ASC`, base);
+    // ขวดที่เปิดแล้ว (OPENED, 6 ชม.) — ห้ามขนส่ง ต้องเร่งเคลียร์โดส (Multi-dose Pooling)
+    const opened = await pool.query(
+      `SELECT vial_id, hospital_id, product_id, product_name, doses_remaining,
+              effective_expiry, ROUND(days_remaining::numeric, 3) AS days_remaining
+       FROM vaccine_vial_status
+       WHERE state='OPENED'${cond}
+       ORDER BY days_remaining ASC`, params);
 
-    // ขาดแคลน (สถานะแดง)
+    // ขาดแคลน/วิกฤต (สถานะแดง)
     const shortage = await pool.query(
-      `SELECT hospital_id, drug, desc_th, stock_on_hand, days_of_supply, status
-       FROM forecasts WHERE ${cond} AND status = 'red'
-       ORDER BY days_of_supply ASC`, base);
+      `SELECT vial_id, hospital_id, product_id, product_name, doses_remaining,
+              ROUND(days_remaining::numeric, 2) AS days_remaining, status
+       FROM vaccine_vial_status WHERE status='red'${cond}
+       ORDER BY days_remaining ASC`, params);
 
     res.json({
       expiring: expiring.rows,
-      reorder: reorder.rows,
+      opened: opened.rows,
       shortage: shortage.rows,
     });
   } catch (e) { next(e); }

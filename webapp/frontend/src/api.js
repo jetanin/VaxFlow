@@ -1,6 +1,6 @@
 // เรียก backend ผ่าน /api (dev: vite proxy, prod: nginx proxy)
 const BASE = "/api";
-const TOKEN_KEY = "medcast_token";
+const TOKEN_KEY = "vaxflow_token";
 
 // ใช้ sessionStorage (ไม่ใช่ localStorage): token อยู่แค่ในแท็บนั้น
 // → ปิดแท็บ = token หาย = ต้อง login ใหม่ · refresh ในแท็บเดิม = token ยังอยู่
@@ -8,12 +8,12 @@ export const auth = {
   get token() { return sessionStorage.getItem(TOKEN_KEY); },
   set token(v) { v ? sessionStorage.setItem(TOKEN_KEY, v) : sessionStorage.removeItem(TOKEN_KEY); },
   get hospital() {
-    const h = sessionStorage.getItem("medcast_hospital");
+    const h = sessionStorage.getItem("vaxflow_hospital");
     return h ? JSON.parse(h) : null;
   },
   set hospital(v) {
-    v ? sessionStorage.setItem("medcast_hospital", JSON.stringify(v))
-      : sessionStorage.removeItem("medcast_hospital");
+    v ? sessionStorage.setItem("vaxflow_hospital", JSON.stringify(v))
+      : sessionStorage.removeItem("vaxflow_hospital");
   },
   logout() { this.token = null; this.hospital = null; },
 };
@@ -31,21 +31,12 @@ async function req(path, options = {}) {
   return res.json();
 }
 
-// granularity ที่ผู้ใช้เลือก (daily | weekly) — เก็บใน localStorage
-export const prefs = {
-  get freq() { return localStorage.getItem("medcast_freq") || "daily"; },
-  set freq(v) { localStorage.setItem("medcast_freq", v); },
-};
-const fq = () => `freq=${prefs.freq}`;
-
 export const api = {
-  // public-ish (ขึ้นกับ freq ที่เลือก)
-  summary: () => req(`/summary?${fq()}`),
-  hospitals: () => req(`/hospitals?${fq()}`),
-  drugs: () => req(`/drugs?${fq()}`),
-  forecasts: (hospitalId, status) =>
-    req(`/forecasts?${fq()}${hospitalId ? `&hospital_id=${hospitalId}` : ""}${status ? `&status=${status}` : ""}`),
-  privacy: () => req("/privacy"),
+  summary: () => req("/summary"),
+  hospitals: () => req("/hospitals"),
+  vaccines: () => req("/vaccines"),
+  vials: (hospitalId, status) =>
+    req(`/vials?${[hospitalId ? `hospital_id=${hospitalId}` : "", status ? `status=${status}` : ""].filter(Boolean).join("&")}`),
   // auth
   login: (username, password) =>
     req("/login", { method: "POST", body: JSON.stringify({ username, password }) }),
@@ -69,7 +60,7 @@ export const api = {
   adminResetPassword: (username) =>
     req("/admin/reset-password", { method: "POST", body: JSON.stringify({ username }) }),
   // borrow
-  lenders: (drug) => req(`/lenders?drug=${encodeURIComponent(drug)}`),
+  lenders: (productId) => req(`/lenders?product_id=${encodeURIComponent(productId)}`),
   createBorrow: (payload) => req("/borrow", { method: "POST", body: JSON.stringify(payload) }),
   listBorrow: () => req("/borrow"),
   actBorrow: (id, status) =>
@@ -78,6 +69,6 @@ export const api = {
     req(`/borrow/${id}/document`, { method: "POST", body: JSON.stringify(payload) }),
   getBorrowDoc: (id) => req(`/borrow/${id}/document`),
   // alerts + audit
-  alerts: () => req(`/alerts?${fq()}`),
+  alerts: () => req("/alerts"),
   audit: () => req("/audit"),
 };

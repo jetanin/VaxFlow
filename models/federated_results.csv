@@ -1,6 +1,0 @@
-model,MAE,RMSE,R2
-fedavg_dp_s0.05,3.249,7.109,0.756
-fedavg_4hosp,3.24,7.125,0.755
-fedavg_dp_s0.1,3.252,7.138,0.754
-fedavg_dp_s0.3,3.335,7.19,0.75
-central_pooled,3.309,7.27,0.745

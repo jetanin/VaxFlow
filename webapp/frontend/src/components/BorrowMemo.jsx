@@ -81,7 +81,7 @@ export default function BorrowMemo({ request, onClose }) {
   const [items, setItems] = useState(
     Array.from({ length: 1 }, (_, i) =>
       i === 0 && request
-        ? { name: request.drug, qty: String(request.quantity ?? "") }
+        ? { name: request.product_id, qty: String(request.quantity ?? "") }
         : { name: "", qty: "" },
     ),
   );

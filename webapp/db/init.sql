@@ -1,4 +1,4 @@
--- MedCast_Secure — Postgres schema
+-- VaxFlow — Postgres schema
 -- ตารางถูกสร้างอัตโนมัติตอน container แรกเริ่ม (docker-entrypoint-initdb.d)
 -- การ seed ข้อมูลจาก CSV ทำโดย backend (seed.js)
 
@@ -9,44 +9,6 @@ CREATE TABLE IF NOT EXISTS hospitals (
     longitude       DOUBLE PRECISION,
     lead_time_days  INTEGER
 );
-
-CREATE TABLE IF NOT EXISTS forecasts (
-    id              SERIAL PRIMARY KEY,
-    freq            TEXT NOT NULL DEFAULT 'daily',   -- 'daily' | 'weekly'
-    hospital_id     TEXT REFERENCES hospitals(hospital_id),
-    drug            TEXT NOT NULL,
-    desc_th         TEXT,
-    last_date       DATE,
-    pred_next_day   DOUBLE PRECISION,   -- พยากรณ์การใช้ต่อวัน
-    stock_on_hand   DOUBLE PRECISION,   -- ยาคงคลังปัจจุบัน
-    reorder_point   DOUBLE PRECISION,   -- จุดสั่งซื้อซ้ำ
-    expiry_date     DATE,               -- วันหมดอายุ
-    days_of_supply  DOUBLE PRECISION,   -- จำนวนวันที่ยาเหลือ = stock / pred
-    status          TEXT CHECK (status IN ('green', 'yellow', 'red')),
-    confidence      DOUBLE PRECISION,
-    UNIQUE (hospital_id, drug, freq)
-);
-
-CREATE TABLE IF NOT EXISTS weights (
-    feature   TEXT PRIMARY KEY,
-    weight    DOUBLE PRECISION
-);
-
--- Federated Learning: weight (coef+intercept) ที่แต่ละ รพ. ส่งกลับมาในแต่ละรอบ
--- เก็บล่าสุด 1 แถวต่อ (รพ., freq) — ไม่มีข้อมูลดิบของคนไข้ มีแต่ค่า weight ที่ใส่ DP noise แล้ว
-CREATE TABLE IF NOT EXISTS fl_contributions (
-    hospital_id  TEXT NOT NULL,
-    freq         TEXT NOT NULL DEFAULT 'daily',   -- daily | weekly
-    n_samples    INTEGER NOT NULL,                -- จำนวนตัวอย่างที่ รพ. ใช้เทรน (ถ่วงน้ำหนัก FedAvg)
-    coef         JSONB NOT NULL,                  -- เวกเตอร์ coefficient (+DP noise)
-    intercept    DOUBLE PRECISION NOT NULL,
-    dp_sigma     DOUBLE PRECISION,                -- ระดับ noise ที่ รพ. ใช้ (โปร่งใส)
-    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (hospital_id, freq)
-);
-
-CREATE INDEX IF NOT EXISTS idx_forecasts_hospital ON forecasts(hospital_id);
-CREATE INDEX IF NOT EXISTS idx_forecasts_status ON forecasts(status);
 
 -- บัญชีผู้ใช้ (1 บัญชีต่อโรงพยาบาล)
 CREATE TABLE IF NOT EXISTS users (
@@ -62,13 +24,13 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TIMESTAMPTZ DEFAULT now()
 );
 
--- คำขอยืมยาระหว่างโรงพยาบาล (รพ. สถานะแดงเป็นผู้ขอ)
+-- คำขอยืมวัคซีนระหว่างโรงพยาบาล (รพ. สถานะแดง = ใกล้หมดอายุ/ขาดแคลน เป็นผู้ขอ)
 CREATE TABLE IF NOT EXISTS borrow_requests (
     id            SERIAL PRIMARY KEY,
-    from_hospital TEXT REFERENCES hospitals(hospital_id),  -- ผู้ขอยืม (ขาดยา)
+    from_hospital TEXT REFERENCES hospitals(hospital_id),  -- ผู้ขอยืม
     to_hospital   TEXT REFERENCES hospitals(hospital_id),  -- ผู้ให้ยืม
-    drug          TEXT NOT NULL,
-    quantity      DOUBLE PRECISION NOT NULL,
+    product_id    TEXT NOT NULL,                           -- วัคซีนที่ขอยืม (vaccine_product)
+    quantity      DOUBLE PRECISION NOT NULL,               -- จำนวนโดส
     reason        TEXT,
     status        TEXT NOT NULL DEFAULT 'pending'
                   CHECK (status IN ('pending', 'approved', 'rejected')),
@@ -101,3 +63,71 @@ CREATE TABLE IF NOT EXISTS audit_log (
     ip_location   TEXT          -- ตำแหน่งโดยประมาณจาก IP (geo lookup)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);
+
+-- ════════════════════════════════════════════════════════════════════════
+-- VaxFlow — โดเมนวัคซีน (สารชีววัตถุ) : เพิ่มเหนือโครง VaxFlow เดิม
+-- ของเดิมเก็บคลังแบบ aggregate รายวัน (ตาราง forecasts) ซึ่งติดตาม "ขวดที่เปิดแล้ว"
+-- ไม่ได้ → วัคซีนต้องลงลึกถึงระดับขวด (vial) เพราะอายุหลังเปิดขวดสั้นเพียง 6 ชม.
+-- ════════════════════════════════════════════════════════════════════════
+
+-- ต้นทุนขนส่งต่อ กม. (บาท/กม.) สำหรับ Transportation Model ใน Predictive Matching
+-- (lat/lon มีอยู่แล้วในตาราง hospitals) — เพิ่มแบบ idempotent ไม่กระทบ DB เดิม
+ALTER TABLE hospitals ADD COLUMN IF NOT EXISTS transport_rate DOUBLE PRECISION;
+
+-- master ของผลิตภัณฑ์วัคซีน (คุณลักษณะ cold-chain + อายุขัยแต่ละสถานะ)
+CREATE TABLE IF NOT EXISTS vaccine_product (
+    product_id            TEXT PRIMARY KEY,        -- เช่น VAX_MRNA_01
+    name                  TEXT NOT NULL,
+    type                  TEXT NOT NULL            -- mRNA | MULTI_DOSE (ตัวแทน 2 กลุ่มตาม Proposal §3.1)
+                          CHECK (type IN ('mRNA', 'MULTI_DOSE')),
+    doses_per_vial        INTEGER NOT NULL,        -- ใช้ใน Multi-dose Pooling
+    deep_frozen_life_days INTEGER NOT NULL,        -- อายุสถานะแช่แข็งจัด (เช่น 365)
+    thawed_life_days      INTEGER NOT NULL,        -- อายุหลังละลาย (เช่น 30)
+    open_life_hours       INTEGER NOT NULL         -- อายุหลังเปิดขวด (เช่น 6)
+);
+
+-- คลังระดับขวด/ล็อต — หัวใจของ Dynamic Expire Calculator
+CREATE TABLE IF NOT EXISTS vaccine_vial (
+    vial_id          TEXT PRIMARY KEY,             -- เช่น VIAL_000123
+    lot_id           TEXT,
+    product_id       TEXT NOT NULL REFERENCES vaccine_product(product_id),
+    hospital_id      TEXT REFERENCES hospitals(hospital_id),
+    state            TEXT NOT NULL DEFAULT 'DEEP_FROZEN'
+                     CHECK (state IN ('DEEP_FROZEN', 'THAWED', 'OPENED')),
+    state_since      TIMESTAMPTZ NOT NULL DEFAULT now(),  -- เวลาที่เข้าสู่สถานะปัจจุบัน (thawed_at/opened_at)
+    doses_remaining  INTEGER NOT NULL,             -- ป้อน Pooling
+    label_expiry     DATE NOT NULL,                -- วันหมดอายุบนสลาก (static)
+    effective_expiry TIMESTAMPTZ,                  -- อายุขัยจริงหลังคำนวณ overwrite (Dynamic Expire)
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_vial_hospital ON vaccine_vial(hospital_id);
+CREATE INDEX IF NOT EXISTS idx_vial_product ON vaccine_vial(product_id);
+CREATE INDEX IF NOT EXISTS idx_vial_state ON vaccine_vial(state);
+
+-- คิวนัดแบบรวมจำนวน (สำหรับ Multi-dose Pooling) — เก็บเป็น "จำนวนคิว" เท่านั้น
+-- ไม่เก็บ PII (ชื่อ/HN/เบอร์) เพื่อคงจุดขาย PDPA 100% (Proposal §5.2)
+CREATE TABLE IF NOT EXISTS appointment_queue (
+    id          SERIAL PRIMARY KEY,
+    queue_date  DATE NOT NULL,
+    hospital_id TEXT REFERENCES hospitals(hospital_id),
+    product_id  TEXT REFERENCES vaccine_product(product_id),
+    slot_count  INTEGER NOT NULL DEFAULT 0,        -- จำนวนคนที่นัดไว้ในวันนั้นสำหรับวัคซีนนี้
+    UNIQUE (queue_date, hospital_id, product_id)
+);
+CREATE INDEX IF NOT EXISTS idx_queue_hospital ON appointment_queue(hospital_id);
+
+-- View: ขวดวัคซีน + สถานะสัญญาณไฟตาม "อายุขัยที่เหลือ" (remaining shelf-life)
+--   🔴 < 14 วัน (หรือหมดอายุแล้ว) · 🟡 < 21 วัน · 🟢 ปกติ   (Proposal §6)
+-- ขวดที่เปิดแล้ว (OPENED, อายุ 6 ชม.) จึงเป็น 🔴 เสมอ — และห้ามขนส่งข้ามสาขา
+CREATE OR REPLACE VIEW vaccine_vial_status AS
+SELECT v.vial_id, v.lot_id, v.product_id, v.hospital_id, v.state, v.state_since,
+       v.doses_remaining, v.label_expiry, v.effective_expiry,
+       p.name AS product_name, p.type AS product_type, p.doses_per_vial,
+       EXTRACT(EPOCH FROM (v.effective_expiry - now())) / 86400.0 AS days_remaining,
+       (v.state <> 'OPENED')                            AS transportable,
+       CASE
+         WHEN v.effective_expiry <= now() + interval '14 days' THEN 'red'
+         WHEN v.effective_expiry <= now() + interval '21 days' THEN 'yellow'
+         ELSE 'green' END                               AS status
+FROM vaccine_vial v
+JOIN vaccine_product p ON p.product_id = v.product_id;

@@ -1,7 +1,6 @@
-// Seed Postgres จากไฟล์ CSV ที่ mount ไว้ที่ /seed
+// Seed Postgres จากไฟล์ CSV ที่ mount ไว้ที่ /seed (VaxFlow — โดเมนวัคซีน)
 // - /seed/data/hospitals/hospital_master.csv
-// - /seed/data/predictions/forecast_snapshot.csv
-// - /seed/models/global_weights.csv
+// - /seed/data/vaccine/{vaccine_product,vaccine_vial,appointment_queue,vaccine_branches}.csv
 const fs = require("fs");
 const path = require("path");
 const bcrypt = require("bcryptjs");
@@ -10,7 +9,7 @@ const { pool } = require("./db");
 
 // docker: /seed (mount ../data, ../models) · local dev: repo root (webapp/backend/../..)
 const SEED_DIR = process.env.SEED_DIR || path.resolve(__dirname, "../..");
-const DEFAULT_PASSWORD = process.env.DEFAULT_PASSWORD || "medcast123";
+const DEFAULT_PASSWORD = process.env.DEFAULT_PASSWORD || "vaxflow123";
 
 function readCsv(relPath) {
   const full = path.join(SEED_DIR, relPath);
@@ -28,17 +27,6 @@ async function ensureSchema() {
     CREATE TABLE IF NOT EXISTS hospitals (
       hospital_id TEXT PRIMARY KEY, name TEXT NOT NULL,
       latitude DOUBLE PRECISION, longitude DOUBLE PRECISION, lead_time_days INTEGER);
-    CREATE TABLE IF NOT EXISTS forecasts (
-      id SERIAL PRIMARY KEY, freq TEXT NOT NULL DEFAULT 'daily', hospital_id TEXT, drug TEXT NOT NULL,
-      desc_th TEXT, last_date DATE, pred_next_day DOUBLE PRECISION, stock_on_hand DOUBLE PRECISION,
-      reorder_point DOUBLE PRECISION, expiry_date DATE, days_of_supply DOUBLE PRECISION,
-      status TEXT, confidence DOUBLE PRECISION, UNIQUE (hospital_id, drug, freq));
-    ALTER TABLE forecasts ADD COLUMN IF NOT EXISTS freq TEXT NOT NULL DEFAULT 'daily';
-    CREATE TABLE IF NOT EXISTS weights (feature TEXT PRIMARY KEY, weight DOUBLE PRECISION);
-    CREATE TABLE IF NOT EXISTS fl_contributions (
-      hospital_id TEXT NOT NULL, freq TEXT NOT NULL DEFAULT 'daily', n_samples INTEGER NOT NULL,
-      coef JSONB NOT NULL, intercept DOUBLE PRECISION NOT NULL, dp_sigma DOUBLE PRECISION,
-      submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (hospital_id, freq));
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
       hospital_id TEXT, role TEXT NOT NULL DEFAULT 'hospital', created_at TIMESTAMPTZ DEFAULT now());
@@ -47,7 +35,7 @@ async function ensureSchema() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_key_expires TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS borrow_requests (
-      id SERIAL PRIMARY KEY, from_hospital TEXT, to_hospital TEXT, drug TEXT NOT NULL,
+      id SERIAL PRIMARY KEY, from_hospital TEXT, to_hospital TEXT, product_id TEXT NOT NULL,
       quantity DOUBLE PRECISION NOT NULL, reason TEXT,
       status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT now());
     CREATE TABLE IF NOT EXISTS audit_log (
@@ -57,6 +45,30 @@ async function ensureSchema() {
     CREATE TABLE IF NOT EXISTS borrow_documents (
       borrow_id INTEGER PRIMARY KEY, filename TEXT, mime TEXT, data_b64 TEXT,
       uploaded_by TEXT, uploaded_at TIMESTAMPTZ DEFAULT now());
+    -- VaxFlow: โดเมนวัคซีน (vial-level)
+    ALTER TABLE hospitals ADD COLUMN IF NOT EXISTS transport_rate DOUBLE PRECISION;
+    CREATE TABLE IF NOT EXISTS vaccine_product (
+      product_id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL,
+      doses_per_vial INTEGER NOT NULL, deep_frozen_life_days INTEGER NOT NULL,
+      thawed_life_days INTEGER NOT NULL, open_life_hours INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS vaccine_vial (
+      vial_id TEXT PRIMARY KEY, lot_id TEXT, product_id TEXT NOT NULL, hospital_id TEXT,
+      state TEXT NOT NULL DEFAULT 'DEEP_FROZEN', state_since TIMESTAMPTZ NOT NULL DEFAULT now(),
+      doses_remaining INTEGER NOT NULL, label_expiry DATE NOT NULL,
+      effective_expiry TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+    CREATE TABLE IF NOT EXISTS appointment_queue (
+      id SERIAL PRIMARY KEY, queue_date DATE NOT NULL, hospital_id TEXT, product_id TEXT,
+      slot_count INTEGER NOT NULL DEFAULT 0, UNIQUE (queue_date, hospital_id, product_id));
+    CREATE OR REPLACE VIEW vaccine_vial_status AS
+      SELECT v.vial_id, v.lot_id, v.product_id, v.hospital_id, v.state, v.state_since,
+             v.doses_remaining, v.label_expiry, v.effective_expiry,
+             p.name AS product_name, p.type AS product_type, p.doses_per_vial,
+             EXTRACT(EPOCH FROM (v.effective_expiry - now())) / 86400.0 AS days_remaining,
+             (v.state <> 'OPENED') AS transportable,
+             CASE WHEN v.effective_expiry <= now() + interval '14 days' THEN 'red'
+                  WHEN v.effective_expiry <= now() + interval '21 days' THEN 'yellow'
+                  ELSE 'green' END AS status
+      FROM vaccine_vial v JOIN vaccine_product p ON p.product_id = v.product_id;
   `);
 }
 
@@ -95,36 +107,65 @@ async function seed() {
   console.log(`[seed] hospitals: ${hospitals.length}`);
   await seedUsers(hospitals);
 
-  const forecasts = readCsv("data/predictions/forecast_snapshot.csv");
-  for (const f of forecasts) {
-    await pool.query(
-      `INSERT INTO forecasts
-         (freq, hospital_id, drug, desc_th, last_date, pred_next_day, stock_on_hand,
-          reorder_point, expiry_date, days_of_supply, status, confidence)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       ON CONFLICT (hospital_id, drug, freq) DO UPDATE SET
-         desc_th=EXCLUDED.desc_th, last_date=EXCLUDED.last_date,
-         pred_next_day=EXCLUDED.pred_next_day, stock_on_hand=EXCLUDED.stock_on_hand,
-         reorder_point=EXCLUDED.reorder_point, expiry_date=EXCLUDED.expiry_date,
-         days_of_supply=EXCLUDED.days_of_supply, status=EXCLUDED.status,
-         confidence=EXCLUDED.confidence`,
-      [f.freq || "daily", f.hospital_id, f.drug, f.desc_th, f.last_date || null,
-       parseFloat(f.pred_next_day), parseFloat(f.stock_on_hand),
-       parseFloat(f.reorder_point), f.expiry_date || null,
-       parseFloat(f.days_of_supply), f.status, parseFloat(f.confidence)]
-    );
-  }
-  console.log(`[seed] forecasts: ${forecasts.length}`);
+  await seedVaccine();
+}
 
-  const weights = readCsv("models/global_weights.csv");
-  for (const w of weights) {
+// VaxFlow: seed โดเมนวัคซีน (vial-level) จาก data/vaccine/*.csv
+async function seedVaccine() {
+  const products = readCsv("data/vaccine/vaccine_product.csv");
+  for (const p of products) {
     await pool.query(
-      `INSERT INTO weights (feature, weight) VALUES ($1,$2)
-       ON CONFLICT (feature) DO UPDATE SET weight=EXCLUDED.weight`,
-      [w.feature, parseFloat(w.weight)]
+      `INSERT INTO vaccine_product
+         (product_id, name, type, doses_per_vial, deep_frozen_life_days, thawed_life_days, open_life_hours)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (product_id) DO UPDATE SET
+         name=EXCLUDED.name, type=EXCLUDED.type, doses_per_vial=EXCLUDED.doses_per_vial,
+         deep_frozen_life_days=EXCLUDED.deep_frozen_life_days,
+         thawed_life_days=EXCLUDED.thawed_life_days, open_life_hours=EXCLUDED.open_life_hours`,
+      [p.product_id, p.name, p.type, parseInt(p.doses_per_vial, 10),
+       parseInt(p.deep_frozen_life_days, 10), parseInt(p.thawed_life_days, 10),
+       parseInt(p.open_life_hours, 10)]
     );
   }
-  console.log(`[seed] weights: ${weights.length}`);
+  console.log(`[seed] vaccine_product: ${products.length}`);
+
+  // transport_rate (บาท/กม.) ของสาขาในเครือข่ายสาธิต
+  const branches = readCsv("data/vaccine/vaccine_branches.csv");
+  for (const b of branches) {
+    await pool.query(`UPDATE hospitals SET transport_rate=$2 WHERE hospital_id=$1`,
+      [b.hospital_id, parseFloat(b.transport_rate)]);
+  }
+  console.log(`[seed] transport_rate updated: ${branches.length} branches`);
+
+  const vials = readCsv("data/vaccine/vaccine_vial.csv");
+  for (const v of vials) {
+    await pool.query(
+      `INSERT INTO vaccine_vial
+         (vial_id, lot_id, product_id, hospital_id, state, state_since,
+          doses_remaining, label_expiry, effective_expiry)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (vial_id) DO UPDATE SET
+         lot_id=EXCLUDED.lot_id, product_id=EXCLUDED.product_id, hospital_id=EXCLUDED.hospital_id,
+         state=EXCLUDED.state, state_since=EXCLUDED.state_since,
+         doses_remaining=EXCLUDED.doses_remaining, label_expiry=EXCLUDED.label_expiry,
+         effective_expiry=EXCLUDED.effective_expiry`,
+      [v.vial_id, v.lot_id, v.product_id, v.hospital_id, v.state, v.state_since,
+       parseInt(v.doses_remaining, 10), v.label_expiry, v.effective_expiry || null]
+    );
+  }
+  console.log(`[seed] vaccine_vial: ${vials.length}`);
+
+  const queue = readCsv("data/vaccine/appointment_queue.csv");
+  for (const q of queue) {
+    await pool.query(
+      `INSERT INTO appointment_queue (queue_date, hospital_id, product_id, slot_count)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (queue_date, hospital_id, product_id) DO UPDATE SET
+         slot_count=EXCLUDED.slot_count`,
+      [q.queue_date, q.hospital_id, q.product_id, parseInt(q.slot_count, 10)]
+    );
+  }
+  console.log(`[seed] appointment_queue: ${queue.length} (counts, no PII)`);
 }
 
 module.exports = { seed };

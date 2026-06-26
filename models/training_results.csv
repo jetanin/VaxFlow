@@ -1,5 +1,0 @@
-model,MAE,RMSE,R2
-xgboost,3.259,5.6,0.749
-randomforest,3.323,5.639,0.746
-lightgbm,3.293,5.693,0.741
-baseline_lag1,4.423,7.611,0.537

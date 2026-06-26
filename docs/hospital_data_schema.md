@@ -1,6 +1,6 @@
 # 🏥 Hospital Data Schema — ข้อมูลที่โรงพยาบาลต้องเก็บ
 
-> Data dictionary สำหรับ **MedCast_Secure**
+> Data dictionary สำหรับ **VaxFlow**
 > กำหนดว่าโรงพยาบาลท้องถิ่นแต่ละแห่งต้องเก็บข้อมูลอะไรบ้าง เพื่อให้ AI ในเครื่อง (edge)
 > สร้างฟีเจอร์ → เทรนโมเดล → ผลิต **weight** ส่งเข้าศูนย์กลาง (Federated Learning)
 
@@ -94,3 +94,60 @@ date,drug_id,stock_on_hand,reorder_level,expiry_date,unit
 2. ข้อมูลดิบทั้ง 3 ตาราง **อยู่ในเครื่องโรงพยาบาลเท่านั้น** — ออกไปแค่ weight
 3. weight ที่ส่งออกผ่าน **Differential Privacy noise + Secure Aggregation + TLS/SSL**
 4. `drug_id` ใช้ระดับ **กลุ่ม ATC** (เช่น N02BE) ไม่ใช่ชื่อการค้า → ลดการระบุพฤติกรรมเฉพาะเจาะจง
+
+---
+
+# 💉 VaxFlow — โดเมนวัคซีน (เพิ่มเติม)
+
+> ส่วนขยายสำหรับ **VaxFlow** : วัคซีนเป็นสารชีววัตถุที่มี **อายุขัยขึ้นกับสถานะจัดเก็บ**
+> (แช่แข็งจัด → ละลาย → เปิดขวด) ตารางคลังรายวันแบบเดิมติดตาม "ขวดที่เปิดแล้ว" ไม่ได้
+> จึงต้องเก็บข้อมูลลึกถึง **ระดับขวด (vial-level)**
+
+```
+DEEP_FROZEN (≈1 ปี) ──ละลาย──► THAWED (30 วัน) ──เจาะขวด──► OPENED (6 ชม.)
+        │                          │                          │
+        └── effective_expiry คำนวณใหม่ทุกครั้งที่เปลี่ยนสถานะ (Dynamic Expire) ──┘
+```
+
+## 4) ตาราง `vaccine_product` — master ผลิตภัณฑ์วัคซีน 🟢 *จำเป็น (เก็บครั้งเดียว)*
+
+| ฟิลด์ | ชนิด | ตัวอย่าง | คำอธิบาย |
+|------|------|---------|----------|
+| `product_id` | STRING | `VAX_MRNA_01` | รหัสผลิตภัณฑ์ |
+| `name` | STRING | `Comirnaty (mRNA)` | ชื่อวัคซีน |
+| `type` | STRING | `mRNA` | `mRNA` \| `MULTI_DOSE` (ตัวแทน 2 กลุ่มตาม Proposal §3.1) |
+| `doses_per_vial` | INT | `6` | จำนวนโดสต่อขวด → ใช้ใน **Pooling** |
+| `deep_frozen_life_days` | INT | `365` | อายุสถานะแช่แข็งจัด |
+| `thawed_life_days` | INT | `30` | อายุหลังละลาย |
+| `open_life_hours` | INT | `6` | อายุหลังเปิดขวด |
+
+## 5) ตาราง `vaccine_vial` — คลังระดับขวด/ล็อต 🟢 *จำเป็น (หัวใจของ Dynamic Expire)*
+
+| ฟิลด์ | ชนิด | ตัวอย่าง | ใช้ทำอะไร |
+|------|------|---------|-----------|
+| `vial_id` | STRING | `VIAL_000123` | รหัสขวด (PK) |
+| `lot_id` | STRING | `LOT_2026A` | ล็อตการผลิต |
+| `product_id` | STRING | `VAX_MRNA_01` | เชื่อม `vaccine_product` |
+| `hospital_id` | STRING | `HOSP_017` | ขวดอยู่ที่สาขาใด |
+| `state` | STRING | `THAWED` | `DEEP_FROZEN` \| `THAWED` \| `OPENED` |
+| `state_since` | TIMESTAMP | `2026-06-26T08:00:00+07` | เวลาเข้าสู่สถานะปัจจุบัน (ตั้งนาฬิกานับถอยหลัง) |
+| `doses_remaining` | INT | `4` | โดสคงเหลือ → ป้อน **Pooling** |
+| `label_expiry` | DATE | `2027-01-15` | วันหมดอายุบนสลาก (static) |
+| `effective_expiry` | TIMESTAMP | `2026-07-26T08:00:00+07` | **อายุขัยจริง** หลังคำนวณ overwrite |
+
+> `effective_expiry` คำนวณโดย Dynamic Expire Calculator:
+> `DEEP_FROZEN` → `label_expiry` · `THAWED` → `min(label_expiry, state_since + 30 วัน)` · `OPENED` → `state_since + 6 ชม.`
+
+## 6) ตาราง `appointment_queue` — คิวนัดแบบรวมจำนวน 🟡 *แนะนำ (สำหรับ Pooling)*
+
+> ⚠️ เก็บเป็น **จำนวนคิว (count)** เท่านั้น — **ไม่เก็บ PII** (ชื่อ/HN/เบอร์)
+> การติดต่อคนไข้จริง (SMS) เกิดภายในระบบ รพ. เบอร์/ชื่อไม่ออกนอกสาขา (Proposal §5.2)
+
+| ฟิลด์ | ชนิด | ตัวอย่าง | คำอธิบาย |
+|------|------|---------|----------|
+| `queue_date` | DATE | `2026-06-28` | วันนัด |
+| `hospital_id` | STRING | `HOSP_017` | สาขา |
+| `product_id` | STRING | `VAX_MRNA_01` | วัคซีนที่นัด |
+| `slot_count` | INT | `8` | จำนวนคนที่นัดในวันนั้น → ตัดสินใจ "เปิดขวดวันที่มีคน ≥ โดส/ขวด" |
+
+> `hospitals` เดิมเพิ่มคอลัมน์ `transport_rate` (บาท/กม.) สำหรับ Transportation Model ใน Predictive Matching (lat/lon มีอยู่แล้ว)

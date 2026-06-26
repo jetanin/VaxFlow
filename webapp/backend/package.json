@@ -1,7 +1,7 @@
 {
-  "name": "medcast-backend",
+  "name": "vaxflow-backend",
   "version": "1.0.0",
-  "description": "MedCast_Secure API — serves drug-shortage forecasts from Postgres",
+  "description": "VaxFlow API — serves vaccine vial-level inventory + borrow from Postgres",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

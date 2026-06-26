@@ -2,13 +2,18 @@ import { useEffect, useState } from "react";
 import { api, auth } from "../api";
 import Pagination, { usePaged } from "./Pagination.jsx";
 
-const STATUS_TH = { green: "🟢", yellow: "🟡", red: "🔴" };
-
-function expiryBadge(days) {
+// อายุที่เหลือ (วัน) -> badge สี ตามเกณฑ์ remaining shelf-life
+function lifeBadge(days) {
   if (days < 0) return <span className="badge red">หมดอายุแล้ว</span>;
-  if (days <= 30) return <span className="badge red">{days} วัน</span>;
-  if (days <= 90) return <span className="badge yellow">{days} วัน</span>;
-  return <span className="badge green">{days} วัน</span>;
+  if (days <= 14) return <span className="badge red">{days.toFixed(1)} วัน</span>;
+  if (days <= 21) return <span className="badge yellow">{days.toFixed(1)} วัน</span>;
+  return <span className="badge green">{days.toFixed(1)} วัน</span>;
+}
+
+// อายุที่เหลือเป็นชั่วโมง (สำหรับขวดที่เปิดแล้ว — 6 ชม.)
+function hoursLeft(days) {
+  const h = days * 24;
+  return h < 0 ? "หมดอายุแล้ว" : `${h.toFixed(1)} ชม.`;
 }
 
 export default function Alerts() {
@@ -21,24 +26,19 @@ export default function Alerts() {
   const kw = q.trim().toLowerCase();
   const match = (r) =>
     kw === "" ||
-    (r.drug && r.drug.toLowerCase().includes(kw)) ||
-    (r.desc_th && r.desc_th.toLowerCase().includes(kw)) ||
+    (r.product_id && r.product_id.toLowerCase().includes(kw)) ||
+    (r.product_name && r.product_name.toLowerCase().includes(kw)) ||
     (r.hospital_id && r.hospital_id.toLowerCase().includes(kw));
   const fExp = (data?.expiring || []).filter(match);
-  const fReo = (data?.reorder || []).filter(match);
+  const fOpen = (data?.opened || []).filter(match);
   const fSho = (data?.shortage || []).filter(match);
 
   // เรียก hook ก่อน early-return เสมอ (ตามกฎ React)
   const pExp = usePaged(fExp, 10);
-  const pReo = usePaged(fReo, 10);
+  const pOpen = usePaged(fOpen, 10);
   const pSho = usePaged(fSho, 10);
 
-  useEffect(() => {
-    api
-      .alerts()
-      .then(setData)
-      .catch((e) => setErr(e.message));
-  }, []);
+  useEffect(() => { api.alerts().then(setData).catch((e) => setErr(e.message)); }, []);
   if (err) return <div className="panel muted">⚠️ {err}</div>;
   if (!data) return <div className="panel muted">กำลังโหลด...</div>;
 
@@ -50,41 +50,39 @@ export default function Alerts() {
           {isAdmin ? "(ทุกโรงพยาบาล)" : `ของ 🏥 ${me?.name || me?.hospital_id}`}
         </p>
         <span style={{ flex: 1 }} />
-        <input className="search" placeholder={`🔍 ค้นหายา ${isAdmin ? "/ รหัส รพ." : ""}`}
+        <input className="search" placeholder={`🔍 ค้นหาวัคซีน ${isAdmin ? "/ รหัส รพ." : ""}`}
                value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
-      {/* Expiry / FEFO */}
+      {/* ใกล้หมดอายุตามอายุขัยจริง (effective_expiry) */}
       <div className="panel" style={{ marginBottom: 16 }}>
-        <h2>⏳ ใกล้หมดอายุ (FEFO — First-Expired-First-Out)</h2>
+        <h2>⏳ ใกล้หมดอายุ (ตามสถานะจัดเก็บ — Dynamic Expire)</h2>
         <table>
           <thead>
             <tr>
               {isAdmin && <th>รพ.</th>}
-              <th>ยา</th>
-              <th>รายละเอียด</th>
-              <th>คงคลัง</th>
-              <th>วันหมดอายุ</th>
+              <th>วัคซีน</th>
+              <th>สถานะ</th>
+              <th>โดสคงเหลือ</th>
+              <th>หมดอายุจริง</th>
               <th>เหลือ</th>
             </tr>
           </thead>
           <tbody>
-            {pExp.slice.map((r, i) => (
-              <tr key={i}>
+            {pExp.slice.map((r) => (
+              <tr key={r.vial_id}>
                 {isAdmin && <td>{r.hospital_id}</td>}
-                <td>{r.drug}</td>
-                <td className="muted">{r.desc_th}</td>
-                <td>{r.stock_on_hand?.toFixed(0)}</td>
-                <td>{r.expiry_date}</td>
-                <td>{expiryBadge(r.days_to_expiry)}</td>
+                <td>{r.product_name}</td>
+                <td>{r.state}</td>
+                <td>{r.doses_remaining}</td>
+                <td className="muted">{new Date(r.effective_expiry).toLocaleString("th-TH")}</td>
+                <td>{lifeBadge(Number(r.days_remaining))}</td>
               </tr>
             ))}
             {fExp.length === 0 && (
-              <tr>
-                <td colSpan={isAdmin ? 6 : 5} className="muted">
-                  {q ? "ไม่พบรายการที่ค้นหา" : "ไม่มียาใกล้หมดอายุ 🎉"}
-                </td>
-              </tr>
+              <tr><td colSpan={isAdmin ? 6 : 5} className="muted">
+                {q ? "ไม่พบรายการที่ค้นหา" : "ไม่มีวัคซีนใกล้หมดอายุ 🎉"}
+              </td></tr>
             )}
           </tbody>
         </table>
@@ -92,76 +90,62 @@ export default function Alerts() {
       </div>
 
       <div className="row">
-        {/* Reorder point */}
+        {/* ขวดที่เปิดแล้ว (6 ชม.) — ต้องเร่งเคลียร์โดส */}
         <div className="panel">
-          <h2>📦 ต่ำกว่าจุดสั่งซื้อ (Reorder Point)</h2>
+          <h2>💉 ขวดที่เปิดแล้ว (เร่งใช้ภายใน 6 ชม.)</h2>
           <table>
             <thead>
               <tr>
                 {isAdmin && <th>รพ.</th>}
-                <th>ยา</th>
-                <th>คงคลัง</th>
-                <th>จุดสั่งซื้อ</th>
-                <th>เหลือ(วัน)</th>
+                <th>วัคซีน</th>
+                <th>โดสค้างขวด</th>
+                <th>เหลือ</th>
               </tr>
             </thead>
             <tbody>
-              {pReo.slice.map((r, i) => (
-                <tr key={i}>
+              {pOpen.slice.map((r) => (
+                <tr key={r.vial_id}>
                   {isAdmin && <td>{r.hospital_id}</td>}
-                  <td>
-                    {STATUS_TH[r.status]} {r.drug}
-                  </td>
-                  <td>{r.stock_on_hand?.toFixed(0)}</td>
-                  <td>{r.reorder_point?.toFixed(0)}</td>
-                  <td>{r.days_of_supply?.toFixed(0)}</td>
+                  <td>{r.product_name}</td>
+                  <td>{r.doses_remaining}</td>
+                  <td><span className="badge red">{hoursLeft(Number(r.days_remaining))}</span></td>
                 </tr>
               ))}
-              {fReo.length === 0 && (
-                <tr>
-                  <td colSpan={isAdmin ? 5 : 4} className="muted">
-                    {q ? "ไม่พบรายการที่ค้นหา" : "สต็อกเพียงพอทุกรายการ"}
-                  </td>
-                </tr>
+              {fOpen.length === 0 && (
+                <tr><td colSpan={isAdmin ? 4 : 3} className="muted">
+                  {q ? "ไม่พบรายการที่ค้นหา" : "ไม่มีขวดที่เปิดค้างไว้"}
+                </td></tr>
               )}
             </tbody>
           </table>
-          <Pagination {...pReo} />
+          <Pagination {...pOpen} />
         </div>
 
-        {/* Shortage (red) */}
+        {/* วิกฤต (สถานะแดง) */}
         <div className="panel">
-          <h2>🔴 ขาดแคลนด่วน (≤3 วัน)</h2>
+          <h2>🔴 วิกฤต (อายุ ≤ 14 วัน)</h2>
           <table>
             <thead>
               <tr>
                 {isAdmin && <th>รพ.</th>}
-                <th>ยา</th>
-                <th>รายละเอียด</th>
-                <th>คงคลัง</th>
-                <th>เหลือ(วัน)</th>
+                <th>วัคซีน</th>
+                <th>โดสคงเหลือ</th>
+                <th>เหลือ</th>
               </tr>
             </thead>
             <tbody>
-              {pSho.slice.map((r, i) => (
-                <tr key={i}>
+              {pSho.slice.map((r) => (
+                <tr key={r.vial_id}>
                   {isAdmin && <td>{r.hospital_id}</td>}
-                  <td>{r.drug}</td>
-                  <td className="muted">{r.desc_th}</td>
-                  <td>{r.stock_on_hand?.toFixed(0)}</td>
-                  <td>
-                    <span className="badge red">
-                      {r.days_of_supply?.toFixed(0)} วัน
-                    </span>
-                  </td>
+                  <td>{r.product_name}</td>
+                  <td>{r.doses_remaining}</td>
+                  <td>{lifeBadge(Number(r.days_remaining))}</td>
                 </tr>
               ))}
               {fSho.length === 0 && (
-                <tr>
-                  <td colSpan={isAdmin ? 5 : 4} className="muted">
-                    {q ? "ไม่พบรายการที่ค้นหา" : "ไม่มียาขาดแคลน"}
-                  </td>
-                </tr>
+                <tr><td colSpan={isAdmin ? 4 : 3} className="muted">
+                  {q ? "ไม่พบรายการที่ค้นหา" : "ไม่มีวัคซีนวิกฤต"}
+                </td></tr>
               )}
             </tbody>
           </table>

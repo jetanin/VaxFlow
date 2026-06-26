@@ -1,8 +1,8 @@
 {
-  "name": "medcast-webapp",
+  "name": "vaxflow-webapp",
   "version": "1.0.0",
   "private": true,
-  "description": "MedCast_Secure web app — รัน backend + frontend พร้อมกันสำหรับ dev",
+  "description": "VaxFlow web app — รัน backend + frontend พร้อมกันสำหรับ dev",
   "scripts": {
     "install:all": "npm --prefix backend install && npm --prefix frontend install",
     "db": "docker compose up db adminer",

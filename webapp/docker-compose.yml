@@ -2,16 +2,16 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: medcast
-      POSTGRES_PASSWORD: medcast
-      POSTGRES_DB: medcast
+      POSTGRES_USER: vaxflow
+      POSTGRES_PASSWORD: vaxflow
+      POSTGRES_DB: vaxflow
     ports:
       - "5432:5432"          # เปิดให้ backend แบบ local (npm run dev) เชื่อมได้
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U medcast"]
+      test: ["CMD-SHELL", "pg_isready -U vaxflow"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -29,24 +29,37 @@ services:
     environment:
       PGHOST: db
       PGPORT: 5432
-      PGUSER: medcast
-      PGPASSWORD: medcast
-      PGDATABASE: medcast
+      PGUSER: vaxflow
+      PGPASSWORD: vaxflow
+      PGDATABASE: vaxflow
       SEED_DIR: /seed
       PORT: 4000
-      RESEED_TOKEN: medcast-reseed   # token ภายในสำหรับ retrainer เรียก /api/reseed
+      RESEED_TOKEN: vaxflow-reseed   # token ภายในสำหรับ retrainer เรียก /api/reseed
       IP_GEO: maxmind                # maxmind (offline) | ipapi (online ระดับเขต)
       GEOIP_DB: /geoip/GeoLite2-City.mmdb
     volumes:
-      # mount ข้อมูล + weight (read-only) ให้ backend seed ลง Postgres
+      # mount ข้อมูล (read-only) ให้ backend seed ลง Postgres
       - ../data:/seed/data:ro
-      - ../models:/seed/models:ro
       - ./geoip:/geoip:ro            # วางไฟล์ GeoLite2-City.mmdb ไว้ที่ webapp/geoip/
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "4000:4000"
+
+  # VaxFlow computation microservice (Python/FastAPI) — วางข้าง ๆ Node เดิม
+  # รับผิดชอบ 3 โมดูล: Dynamic Expire / Predictive Matching / Multi-dose Pooling
+  vaccine-engine:
+    build: ../vaccine-engine
+    environment:
+      PORT: 8500
+    ports:
+      - "8500:8500"   # API docs: http://localhost:8500/docs
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8500/engine/health').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   frontend:
     build: ./frontend
@@ -55,18 +68,6 @@ services:
     ports:
       - "8080:80"     # HTTP (redirect -> HTTPS)
       - "8443:443"    # HTTPS (self-signed cert)
-
-  # เทรน FedAvg ใหม่อัตโนมัติทุกวัน -> อัปเดต weight + snapshot -> สั่ง backend reseed
-  retrainer:
-    build: ./retrainer
-    environment:
-      BACKEND_URL: http://backend:4000
-      RESEED_TOKEN: medcast-reseed
-      DP_SIGMA: "0.1"
-    volumes:
-      - ..:/repo            # ทั้ง repo (อ่าน data/, เขียน models/ + data/predictions/)
-    depends_on:
-      - backend
 
 volumes:
   pgdata:

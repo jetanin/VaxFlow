@@ -35,7 +35,7 @@ export default function Login({ onLogin }) {
   return (
     <div className="login-wrap">
       <form className="panel login-card" onSubmit={submit}>
-        <h1 className="title">💊 MedCast_Secure</h1>
+        <h1 className="title">💊 VaxFlow</h1>
         <p className="subtitle">
           {mode === "login" ? "เข้าสู่ระบบสำหรับโรงพยาบาล" : "เปลี่ยนรหัสผ่าน (ใช้คีย์จาก admin)"}
         </p>

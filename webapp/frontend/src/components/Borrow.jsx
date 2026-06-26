@@ -13,8 +13,8 @@ const STATUS_TH = {
 export default function Borrow() {
   const me = auth.hospital;
   const isAdmin = me?.role === "admin";
-  const [redDrugs, setRedDrugs] = useState([]);
-  const [drug, setDrug] = useState("");
+  const [redProducts, setRedProducts] = useState([]);
+  const [product, setProduct] = useState("");
   const [lenders, setLenders] = useState([]);
   const [toHospital, setToHospital] = useState("");
   const [qty, setQty] = useState("");
@@ -34,21 +34,23 @@ export default function Borrow() {
 
   useEffect(() => {
     if (!isAdmin) {
-      api.forecasts(me.hospital_id, "red").then((rows) => {
-        setRedDrugs(rows);
-        if (rows[0]) setDrug(rows[0].drug);
+      // วัคซีนที่ รพ. มีขวดสถานะ 🔴 (ใกล้หมดอายุ/ขาดแคลน) → ยืมได้
+      api.vaccines().then((rows) => {
+        const reds = rows.filter((r) => Number(r.n_red) > 0);
+        setRedProducts(reds);
+        if (reds[0]) setProduct(reds[0].product_id);
       });
     }
     refresh();
   }, []);
 
   useEffect(() => {
-    if (drug)
-      api.lenders(drug).then((rows) => {
+    if (product)
+      api.lenders(product).then((rows) => {
         setLenders(rows);
         setToHospital(rows[0]?.hospital_id || "");
       });
-  }, [drug]);
+  }, [product]);
 
   async function submit(e) {
     e.preventDefault();
@@ -56,11 +58,11 @@ export default function Borrow() {
     try {
       await api.createBorrow({
         to_hospital: toHospital,
-        drug,
+        product_id: product,
         quantity: parseFloat(qty),
         reason,
       });
-      setMsg("✅ ส่งคำขอยืมยาเรียบร้อย");
+      setMsg("✅ ส่งคำขอยืมวัคซีนเรียบร้อย");
       setQty("");
       setReason("");
       refresh();
@@ -98,24 +100,24 @@ export default function Borrow() {
         {/* ---- ฟอร์มยืมยา (เฉพาะผู้ใช้ระดับโรงพยาบาล) ---- */}
         {!isAdmin && (
           <div className="panel">
-            <h2>📝 ยืมยาจากโรงพยาบาลอื่น</h2>
-            {redDrugs.length === 0 ? (
+            <h2>📝 ยืมวัคซีนจากโรงพยาบาลอื่น</h2>
+            {redProducts.length === 0 ? (
               <p className="muted">
-                โรงพยาบาลของคุณไม่มียาสถานะ 🔴 ขาดแคลน — ยังไม่ต้องยืม 🎉
+                โรงพยาบาลของคุณไม่มีวัคซีนสถานะ 🔴 — ยังไม่ต้องยืม 🎉
               </p>
             ) : (
               <form onSubmit={submit}>
-                <label className="muted">ยาที่ขาดแคลน (🔴 เท่านั้น)</label>
-                <select value={drug} onChange={(e) => setDrug(e.target.value)}>
-                  {redDrugs.map((d) => (
-                    <option key={d.drug} value={d.drug}>
-                      {d.drug} — {d.desc_th}
+                <label className="muted">วัคซีนที่ขาดแคลน/ใกล้หมดอายุ (🔴 เท่านั้น)</label>
+                <select value={product} onChange={(e) => setProduct(e.target.value)}>
+                  {redProducts.map((d) => (
+                    <option key={d.product_id} value={d.product_id}>
+                      {d.product_name} ({d.product_id})
                     </option>
                   ))}
                 </select>
 
                 <label className="muted">
-                  ยืมจากโรงพยาบาล 🟢 (เรียงตามระยะทาง GPS ใกล้สุด)
+                  ยืมจากโรงพยาบาล 🟢 (ขวดขนส่งได้ · เรียงตามระยะทาง GPS ใกล้สุด)
                 </label>
                 <select
                   value={toHospital}
@@ -126,14 +128,13 @@ export default function Borrow() {
                   )}
                   {lenders.map((l) => (
                     <option key={l.hospital_id} value={l.hospital_id}>
-                      {l.name} · {l.distance_km} กม. · เหลือ{" "}
-                      {Math.round(l.days_of_supply)} วัน (surplus{" "}
-                      {Math.round(l.surplus)})
+                      {l.name} · {l.distance_km} กม. · {l.green_vials} ขวด (เหลือ{" "}
+                      {Math.round(l.surplus_doses)} โดส)
                     </option>
                   ))}
                 </select>
 
-                <label className="muted">จำนวนที่ขอยืม</label>
+                <label className="muted">จำนวนโดสที่ขอยืม</label>
                 <input
                   type="number"
                   min="1"
@@ -146,7 +147,7 @@ export default function Borrow() {
                 <input
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
-                  placeholder="เช่น คนไข้เพิ่มฉับพลัน"
+                  placeholder="เช่น คิวนัดเพิ่มฉับพลัน"
                 />
 
                 <button
@@ -154,7 +155,7 @@ export default function Borrow() {
                   type="submit"
                   disabled={!toHospital}
                 >
-                  ส่งคำขอยืมยา
+                  ส่งคำขอยืมวัคซีน
                 </button>
               </form>
             )}
@@ -164,13 +165,13 @@ export default function Borrow() {
 
         {/* ---- รายการคำขอ ---- */}
         <div className="panel">
-          <h2>📋 คำขอยืมยา {isAdmin && "(ทุกโรงพยาบาล)"}</h2>
+          <h2>📋 คำขอยืมวัคซีน {isAdmin && "(ทุกโรงพยาบาล)"}</h2>
           <table>
             <thead>
               <tr>
                 <th>ทิศทาง</th>
-                <th>ยา</th>
-                <th>จำนวน</th>
+                <th>วัคซีน</th>
+                <th>จำนวน (โดส)</th>
                 <th>คู่ (ขอ → ให้)</th>
                 <th>สถานะ</th>
                 <th></th>
@@ -186,7 +187,7 @@ export default function Borrow() {
                         ? "📥 ถูกขอ"
                         : "📋 ภาพรวม"}
                   </td>
-                  <td>{r.drug}</td>
+                  <td>{r.product_id}</td>
                   <td>{r.quantity}</td>
                   <td className="muted">
                     {r.direction === "oversight"
