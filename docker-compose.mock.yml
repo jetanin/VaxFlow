@@ -1,0 +1,45 @@
+# Tier 2 Read-only DB Connector — Mock HOSxP (MySQL) + VaxFlow Edge Agent
+# รัน:  docker compose -f docker-compose.mock.yml up --build
+# ส่อง: http://localhost:8081 (Adminer) login เป็น vaxflow_ro แล้วลองยิง PII ดูว่าโดนบล็อก
+services:
+  mock-his:
+    image: mysql:8.0
+    container_name: vaxflow-mock-his
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: mock_hosxp
+    volumes:
+      - ./mock-his/init:/docker-entrypoint-initdb.d:ro   # mount SQL init (รันครั้งแรกตามลำดับชื่อ)
+      - mock_his_data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    networks: [vaxflow-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prootpw"]
+      interval: 10s
+      retries: 5
+
+  vaxflow-edge:
+    build: ./vaccine-engine
+    container_name: vaxflow-edge
+    environment:
+      HIS_DB_HOST: mock-his
+      HIS_DB_PORT: "3306"
+      HIS_DB_NAME: mock_hosxp
+      HIS_DB_USER: vaxflow_ro          # view-only เท่านั้น
+      HIS_DB_PASS: CHANGE_ME_strong_pw
+    ports:
+      - "8500:8500"                    # FastAPI docs: http://localhost:8500/docs
+    depends_on:
+      mock-his:
+        condition: service_healthy     # รอ DB พร้อมก่อนค่อยต่อ
+    networks: [vaxflow-net]
+
+  adminer:
+    image: adminer
+    ports: ["8081:8080"]
+    networks: [vaxflow-net]
+
+volumes:
+  mock_his_data:
+networks:
+  vaxflow-net:
