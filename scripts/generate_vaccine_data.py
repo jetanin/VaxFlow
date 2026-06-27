@@ -1,4 +1,4 @@
-"""สร้างข้อมูลจำลองโดเมน "วัคซีน" สำหรับ VaxFlow (เครือข่ายสาธิต 3–5 สาขา)
+"""สร้างข้อมูลจำลองโดเมน "วัคซีน" สำหรับ VaxFlow (เครือข่ายสาธิต 13 สาขา)
 
 product master โหลดจาก **data/fda/vaccine_merged_with_storage.csv** (วัคซีนจริงจาก อย.
 พร้อมคุณลักษณะ cold-chain) แล้วสร้างคลัง **ระดับขวด (vial-level)** ตาม state machine
@@ -27,7 +27,7 @@ MASTER = ROOT / "data" / "fda" / "vaccine_merged_with_storage.csv"
 TZ = timezone(timedelta(hours=7))
 NOW = datetime(2026, 6, 26, 8, 0, tzinfo=TZ)
 
-N_BRANCHES = 5            # เครือข่ายสาธิต 3–5 สาขา (ตาม Proposal §1 ข้อ 7)
+N_BRANCHES = 13           # เครือข่ายสาธิต 13 สาขา (รพ.ตัวอย่างจริง — ตรงกับ hospital_master.csv)
 SEED = 2026
 rng = np.random.default_rng(SEED)
 

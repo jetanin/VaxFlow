@@ -161,10 +161,10 @@ docker compose -f docker-compose.mock.yml up --build
 
 ## 🚀 เริ่มต้นใช้งาน
 
-### 1. สร้างข้อมูลจำลอง (เครือข่ายสาธิต 3–5 สาขา)
+### 1. สร้างข้อมูลจำลอง (เครือข่ายสาธิต 13 สาขา)
 
 ```powershell
-python scripts/generate_hospital_data.py    # -> data/hospitals/hospital_master.csv (100 รพ. / 77 จังหวัด)
+python scripts/generate_hospital_data.py    # -> data/hospitals/hospital_master.csv (รพ.ตัวอย่างจริง 13 แห่ง)
 python scripts/generate_vaccine_data.py      # -> data/vaccine/*.csv (vial-level + คิวนัด + transport_rate)
 ```
 
