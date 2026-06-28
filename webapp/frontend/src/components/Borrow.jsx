@@ -107,8 +107,13 @@ export default function Borrow() {
               </p>
             ) : (
               <form onSubmit={submit}>
-                <label className="muted">วัคซีนที่ขาดแคลน/ใกล้หมดอายุ (🔴 เท่านั้น)</label>
-                <select value={product} onChange={(e) => setProduct(e.target.value)}>
+                <label className="muted">
+                  วัคซีนที่ขาดแคลน/ใกล้หมดอายุ (🔴 เท่านั้น)
+                </label>
+                <select
+                  value={product}
+                  onChange={(e) => setProduct(e.target.value)}
+                >
                   {redProducts.map((d) => (
                     <option key={d.product_id} value={d.product_id}>
                       {d.product_name} ({d.product_id})
@@ -117,7 +122,7 @@ export default function Borrow() {
                 </select>
 
                 <label className="muted">
-                  ยืมจากโรงพยาบาล 🟢 (ขวดขนส่งได้ · เรียงตามระยะทาง GPS ใกล้สุด)
+                  ยืมจากโรงพยาบาล 🟢 (ขวดขนส่งได้ · เรียงตามระยะทางตามถนนใกล้สุด)
                 </label>
                 <select
                   value={toHospital}
@@ -128,8 +133,8 @@ export default function Borrow() {
                   )}
                   {lenders.map((l) => (
                     <option key={l.hospital_id} value={l.hospital_id}>
-                      {l.name} · {l.distance_km} กม. · {l.green_vials} ขวด (เหลือ{" "}
-                      {Math.round(l.surplus_doses)} โดส)
+                      {l.name} · {l.distance_km} กม. · {l.green_vials} ขวด
+                      (เหลือ {Math.round(l.surplus_doses)} โดส)
                     </option>
                   ))}
                 </select>

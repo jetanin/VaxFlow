@@ -1,4 +1,4 @@
-# VaxFlow retrainer — เทรนโมเดลใหม่ตามตารางเวลา (ดีฟอลต์ 01:00 ทุกวัน)
+# VacFlow retrainer — เทรนโมเดลใหม่ตามตารางเวลา (ดีฟอลต์ 01:00 ทุกวัน)
 # รัน notebook pipeline (03 feature → 04 train → 05 eval) แล้วสั่ง backend reseed
 FROM python:3.11-slim
 

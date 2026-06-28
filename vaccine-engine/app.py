@@ -1,4 +1,4 @@
-"""VaxFlow vaccine-engine — FastAPI microservice (Proposal: backend = Python)
+"""VacFlow vaccine-engine — FastAPI microservice (Proposal: backend = Python)
 
 วางข้าง ๆ Node/Express เดิม (loose coupling): Node ทำ auth/seed/audit/serve React
 ส่วน engine นี้รับผิดชอบ logic เชิงคำนวณ 3 โมดูล (Proposal §3.2):
@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from modules import dynamic_expire, matching_engine, pooling
 
 app = FastAPI(
-    title="VaxFlow vaccine-engine",
+    title="VacFlow vaccine-engine",
     version="0.1.0",
     description="Dynamic Expire · Predictive Matching · Multi-dose Pooling",
 )

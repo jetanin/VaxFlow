@@ -2,22 +2,22 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: vaxflow
-      POSTGRES_PASSWORD: vaxflow
-      POSTGRES_DB: vaxflow
+      POSTGRES_USER: vacflow
+      POSTGRES_PASSWORD: vacflow
+      POSTGRES_DB: vacflow
     ports:
       - "5432:5432"          # เปิดให้ backend แบบ local (npm run dev) เชื่อมได้
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vaxflow"]
+      test: ["CMD-SHELL", "pg_isready -U vacflow"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   # Mock HOSxP (MySQL) — แหล่งข้อมูลจริงต่อโรงพยาบาล (per-hospital vial-level)
-  # VaxFlow backend มา fetch ผ่าน view (vaxflow_ro) แทนการ seed จาก CSV ตรง ๆ
+  # VacFlow backend มา fetch ผ่าน view (vacflow_ro) แทนการ seed จาก CSV ตรง ๆ
   mock-his:
     image: mysql:8.0
     environment:
@@ -46,20 +46,21 @@ services:
     environment:
       PGHOST: db
       PGPORT: 5432
-      PGUSER: vaxflow
-      PGPASSWORD: vaxflow
-      PGDATABASE: vaxflow
+      PGUSER: vacflow
+      PGPASSWORD: vacflow
+      PGDATABASE: vacflow
       SEED_DIR: /seed
       PORT: 4000
-      RESEED_TOKEN: vaxflow-reseed   # token ภายในสำหรับ retrainer เรียก /api/reseed
+      RESEED_TOKEN: vacflow-reseed   # token ภายในสำหรับ retrainer เรียก /api/reseed
       IP_GEO: maxmind                # maxmind (offline) | ipapi (online ระดับเขต)
       GEOIP_DB: /geoip/GeoLite2-City.mmdb
       # Mock HOSxP — fetch โดเมนวัคซีนต่อ รพ. (ไม่ตั้ง = fallback อ่าน CSV)
       HIS_DB_HOST: mock-his
       HIS_DB_PORT: "3306"
-      HIS_DB_USER: vaxflow_ro        # read-only — อ่านได้เฉพาะ view ที่ตัด PII
+      HIS_DB_USER: vacflow_ro        # read-only — อ่านได้เฉพาะ view ที่ตัด PII
       HIS_DB_PASS: CHANGE_ME_strong_pw
       HIS_DB_NAME: mock_hosxp
+      ENGINE_URL: http://vaccine-engine:8500   # Predictive Matching Engine (LP transshipment)
     volumes:
       # mount ข้อมูล (read-only) ให้ backend seed ลง Postgres
       - ../data:/seed/data:ro
@@ -69,10 +70,12 @@ services:
         condition: service_healthy
       mock-his:
         condition: service_started   # backend มี waitForHis retry เอง (init ครั้งแรกนาน)
+      vaccine-engine:
+        condition: service_started   # ใช้ /engine/match (best-effort — ล่มก็ fallback CSV)
     ports:
       - "4000:4000"
 
-  # VaxFlow computation microservice (Python/FastAPI) — วางข้าง ๆ Node เดิม
+  # VacFlow computation microservice (Python/FastAPI) — วางข้าง ๆ Node เดิม
   # รับผิดชอบ 3 โมดูล: Dynamic Expire / Predictive Matching / Multi-dose Pooling
   vaccine-engine:
     build: ../vaccine-engine
@@ -110,10 +113,10 @@ services:
       TZ: Asia/Bangkok
       RUN_AT: "01:00"               # เวลาเทรนรายวัน (HH:MM ตามเวลาไทย)
       BACKEND_URL: http://backend:4000
-      RESEED_TOKEN: vaxflow-reseed  # ต้องตรงกับ backend.RESEED_TOKEN
+      RESEED_TOKEN: vacflow-reseed  # ต้องตรงกับ backend.RESEED_TOKEN
       NB_TIMEOUT: "1800"            # timeout ต่อโน้ตบุ๊ก (วินาที)
-      VAXFLOW_MODELS: XGBoost       # nightly เทรนเฉพาะ XGBoost (GPU/CUDA) — เร็ว · ว่าง=ครบทุกตัว
-      VAXFLOW_N_TRIALS: "40"        # GPU เร็ว → จูน Optuna ได้มากขึ้น (รันมือใช้ดีฟอลต์ 25)
+      VACFLOW_MODELS: XGBoost       # nightly เทรนเฉพาะ XGBoost (GPU/CUDA) — เร็ว · ว่าง=ครบทุกตัว
+      VACFLOW_N_TRIALS: "40"        # GPU เร็ว → จูน Optuna ได้มากขึ้น (รันมือใช้ดีฟอลต์ 25)
       # จำกัด thread ของ BLAS/XGBoost/LightGBM ให้สอดคล้องลิมิต CPU (กัน oversubscribe)
       OMP_NUM_THREADS: "8"
       OPENBLAS_NUM_THREADS: "8"

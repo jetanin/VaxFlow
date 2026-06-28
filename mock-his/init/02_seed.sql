@@ -201,7 +201,7 @@ SELECT
 FROM days
 JOIN (SELECT icode FROM drugitems WHERE is_vaccine = 1) d;
 
--- คลังระดับ lot — 1 ล็อตต่อวัคซีน จงใจวน แดง/เหลือง/เขียว ให้ VaxFlow จับ
+-- คลังระดับ lot — 1 ล็อตต่อวัคซีน จงใจวน แดง/เหลือง/เขียว ให้ VacFlow จับ
 INSERT INTO wh_drug_balance (warehouse, icode, lot_no, qty, expire_date, snapshot_date) VALUES
 ('MAIN','VAX_J07BC02_001','LOT-J07BC02-001',40, DATE_ADD(CURDATE(), INTERVAL 10 DAY), CURDATE()),
 ('MAIN','VAX_J07BC02_002','LOT-J07BC02-002',57, DATE_ADD(CURDATE(), INTERVAL 18 DAY), CURDATE()),

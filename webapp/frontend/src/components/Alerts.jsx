@@ -32,11 +32,13 @@ export default function Alerts() {
   const fExp = (data?.expiring || []).filter(match);
   const fOpen = (data?.opened || []).filter(match);
   const fSho = (data?.shortage || []).filter(match);
+  const fOv = (data?.overstock || []).filter(match);
 
   // เรียก hook ก่อน early-return เสมอ (ตามกฎ React)
   const pExp = usePaged(fExp, 10);
   const pOpen = usePaged(fOpen, 10);
   const pSho = usePaged(fSho, 10);
+  const pOv = usePaged(fOv, 10);
 
   useEffect(() => { api.alerts().then(setData).catch((e) => setErr(e.message)); }, []);
   if (err) return <div className="panel muted">⚠️ {err}</div>;
@@ -151,6 +153,39 @@ export default function Alerts() {
           </table>
           <Pagination {...pSho} />
         </div>
+      </div>
+
+      {/* คงคลังสะสมเกินดีมานด์ (Yellow trigger §4.2: I_t > D_avg) — เสี่ยงใช้ไม่ทัน ควรเร่งระบาย/โอนออก */}
+      <div className="panel" style={{ marginTop: 16 }}>
+        <h2>🟡 คงคลังสะสมเกินดีมานด์ (เสี่ยงใช้ไม่ทัน — ควรโอนออก)</h2>
+        <table>
+          <thead>
+            <tr>
+              {isAdmin && <th>รพ.</th>}
+              <th>วัคซีน</th>
+              <th>คงเหลือใช้ได้ (โดส)</th>
+              <th>ดีมานด์/วัน</th>
+              <th>ใช้หมดใน</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pOv.slice.map((r, i) => (
+              <tr key={`${r.hospital_id}-${r.product_id}-${i}`}>
+                {isAdmin && <td>{r.hospital_id}</td>}
+                <td>{r.product_name || r.product_id}</td>
+                <td>{Number(r.on_hand).toLocaleString()}</td>
+                <td>{Number(r.avg_daily_demand).toFixed(1)}</td>
+                <td><span className="badge yellow">{r.days_to_consume ?? "—"} วัน</span></td>
+              </tr>
+            ))}
+            {fOv.length === 0 && (
+              <tr><td colSpan={isAdmin ? 5 : 4} className="muted">
+                {q ? "ไม่พบรายการที่ค้นหา" : "ไม่มีคงคลังสะสมเกินดีมานด์ 🎉"}
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+        <Pagination {...pOv} />
       </div>
     </div>
   );

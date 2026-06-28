@@ -5,11 +5,12 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const maxmind = require("maxmind");
 const { pool, waitForDb } = require("./db");
-const { seed, recomputeOrders } = require("./seed");
+const { seed, recomputeOrders, recomputeTransshipment } = require("./seed");
 const { signToken, requireAuth, requireAdmin } = require("./auth");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const ENGINE_URL = process.env.ENGINE_URL || "http://vaccine-engine:8500";  // vaccine-engine (3 โมดูล)
 
 // ===== IP geolocation (hybrid) =====
 // IP_GEO=maxmind (default, offline, ระดับจังหวัด) | ipapi (online, ระดับเขต/อำเภอ)
@@ -264,7 +265,7 @@ app.post("/api/offline", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-const RESET_PW = process.env.DEFAULT_PASSWORD || "vaxflow123";
+const RESET_PW = process.env.DEFAULT_PASSWORD || "vacflow123";
 
 // admin: ออกคีย์ 4 หลักให้ รพ. ไปใช้เปลี่ยนรหัส (หมดอายุใน 1 ชม.)
 app.post("/api/admin/reset-key", requireAuth, requireAdmin, async (req, res, next) => {
@@ -280,7 +281,7 @@ app.post("/api/admin/reset-key", requireAuth, requireAdmin, async (req, res, nex
   } catch (e) { next(e); }
 });
 
-// admin: รีเซ็ตรหัสผ่านกลับเป็นค่าตั้งต้น (vaxflow123)
+// admin: รีเซ็ตรหัสผ่านกลับเป็นค่าตั้งต้น (vacflow123)
 app.post("/api/admin/reset-password", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const { username } = req.body || {};
@@ -339,15 +340,18 @@ app.get("/api/lenders", requireAuth, async (req, res, next) => {
        SELECT v.hospital_id, h.name,
               COUNT(*)                  AS green_vials,
               SUM(v.doses_remaining)    AS surplus_doses,
-              ROUND((6371 * acos(greatest(-1, least(1,
+              -- ระยะทางตามถนนจริง (OSRM) ถ้ามี · ไม่งั้น fallback haversine (เส้นตรง)
+              ROUND(COALESCE(d.distance_km, 6371 * acos(greatest(-1, least(1,
                 cos(radians(me.lat)) * cos(radians(h.latitude)) *
                 cos(radians(h.longitude) - radians(me.lon)) +
                 sin(radians(me.lat)) * sin(radians(h.latitude))))))::numeric, 1) AS distance_km
        FROM vaccine_vial_status v
-       JOIN hospitals h ON h.hospital_id = v.hospital_id, me
+       JOIN hospitals h ON h.hospital_id = v.hospital_id
+       LEFT JOIN hospital_distance d ON d.from_hospital = $2 AND d.to_hospital = v.hospital_id
+       CROSS JOIN me
        WHERE v.product_id = $1 AND v.status = 'green' AND v.transportable
          AND v.hospital_id <> $2
-       GROUP BY v.hospital_id, h.name, h.latitude, h.longitude, me.lat, me.lon
+       GROUP BY v.hospital_id, h.name, h.latitude, h.longitude, me.lat, me.lon, d.distance_km
        ORDER BY distance_km ASC`,
       [product_id, req.user.hospital_id]);
     res.json(rows);
@@ -524,10 +528,34 @@ app.get("/api/alerts", requireAuth, async (req, res, next) => {
        FROM vaccine_vial_status WHERE status='red'${cond}
        ORDER BY days_remaining ASC`, params);
 
+    // คงคลังสะสมเกินดีมานด์ (Yellow trigger §4.2: I_t > D_avg) — เสี่ยงใช้ไม่ทันก่อนหมดอายุ
+    //   on_hand (🟢/🟡 ขนส่งได้) > ดีมานด์เฉลี่ย × 14 วัน (จะใช้ไม่หมดก่อนเข้าหน้าต่างวิกฤต) → ควรเร่งโอนออก
+    const ovParams = [];
+    let ovCond = "";
+    if (scope) { ovParams.push(scope); ovCond = ` AND s.hospital_id=$${ovParams.length}`; }
+    const overstock = await pool.query(`
+      WITH demand AS (
+        SELECT hospital_id, product_id, AVG(slot_count)::float AS avg_daily
+        FROM appointment_queue GROUP BY hospital_id, product_id),
+      stock AS (
+        SELECT hospital_id, product_id,
+               COALESCE(SUM(doses_remaining) FILTER
+                 (WHERE status IN ('green','yellow') AND transportable),0) AS usable
+        FROM vaccine_vial_status GROUP BY hospital_id, product_id)
+      SELECT s.hospital_id, s.product_id, p.name AS product_name, s.usable AS on_hand,
+             ROUND(COALESCE(d.avg_daily,0)::numeric,2) AS avg_daily_demand,
+             ROUND((s.usable / NULLIF(d.avg_daily,0))::numeric,0) AS days_to_consume
+      FROM stock s
+      LEFT JOIN demand d ON d.hospital_id=s.hospital_id AND d.product_id=s.product_id
+      LEFT JOIN vaccine_product p ON p.product_id=s.product_id
+      WHERE COALESCE(d.avg_daily,0) > 0 AND s.usable > d.avg_daily * 14${ovCond}
+      ORDER BY days_to_consume DESC NULLS LAST LIMIT 200`, ovParams);
+
     res.json({
       expiring: expiring.rows,
       opened: opened.rows,
       shortage: shortage.rows,
+      overstock: overstock.rows,
     });
   } catch (e) { next(e); }
 });
@@ -544,7 +572,7 @@ app.get("/api/analytics/models", requireAuth, async (_req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Wastage Simulation (Without vs With VaxFlow) — พิสูจน์ KPI ลดการสูญเสีย
+// Wastage Simulation (Without vs With VacFlow) — พิสูจน์ KPI ลดการสูญเสีย
 app.get("/api/analytics/wastage", requireAuth, async (_req, res, next) => {
   try {
     const { rows } = await pool.query(
@@ -607,9 +635,10 @@ function tmtOf(productId) {
 app.post("/api/retrain", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const n = await recomputeOrders();
+    const moves = await recomputeTransshipment();   // แผนโอนย้ายจาก vaccine-engine (LP)
     await logAudit(req, "retrain_reorder", "order_recommendation", null,
-                   `คำนวณคำแนะนำการสั่งซื้อใหม่: ${n} รายการ`);
-    res.json({ ok: true, suggestions: n });
+                   `คำนวณใหม่: สั่งซื้อ ${n} รายการ · แผนโอนย้าย ${moves} เส้นทาง`);
+    res.json({ ok: true, suggestions: n, transshipment_moves: moves });
   } catch (e) { next(e); }
 });
 
@@ -634,7 +663,7 @@ app.get("/api/orders", requireAuth, async (req, res, next) => {
 });
 
 // สั่งซื้อ → HOSxP: สร้าง "คำสั่งซื้อ" (PO command) ส่งให้ระบบ HOSxP รับไปออกใบสั่งจริง
-//   HIS connector เป็น read-only (PDPA) จึงไม่เขียนตรง — VaxFlow ออกคำสั่ง, HOSxP ดำเนินการ
+//   HIS connector เป็น read-only (PDPA) จึงไม่เขียนตรง — VacFlow ออกคำสั่ง, HOSxP ดำเนินการ
 app.post("/api/orders/:id/dispatch", requireAuth, async (req, res, next) => {
   try {
     const cur = await pool.query("SELECT * FROM order_recommendations WHERE id=$1", [req.params.id]);
@@ -663,6 +692,51 @@ app.post("/api/orders/:id/dispatch", requireAuth, async (req, res, next) => {
     await logAudit(req, "dispatch_order", "order_recommendation", o.id,
                    `ส่งคำสั่งซื้อ ${o.product_id} (${o.recommended_vials} ขวด/${o.recommended_doses} โดส) → HOSxP`);
     res.json({ ok: true, command });
+  } catch (e) { next(e); }
+});
+
+// ---------- DYNAMIC EXPIRE (event-driven overwrite §3.2.1) ----------
+// จำลอง event หน้างาน (ยิงบาร์โค้ดละลาย/เปิดขวด) → เปลี่ยนสถานะ + overwrite อายุขัยจริงทันที
+//   เรียก vaccine-engine /engine/expire (โมดูล 1) คำนวณ effective_expiry ใหม่
+const NEXT_STATE = { DEEP_FROZEN: "THAWED", THAWED: "OPENED" };
+app.post("/api/vials/:id/transition", requireAuth, async (req, res, next) => {
+  try {
+    const cur = await pool.query(
+      `SELECT v.vial_id, v.hospital_id, v.state, v.label_expiry,
+              p.thawed_life_days, p.open_life_hours
+       FROM vaccine_vial v JOIN vaccine_product p ON p.product_id = v.product_id
+       WHERE v.vial_id = $1`, [req.params.id]);
+    const v = cur.rows[0];
+    if (!v) return res.status(404).json({ error: "ไม่พบขวด" });
+    if (req.user.role !== "admin" && req.user.hospital_id !== v.hospital_id)
+      return res.status(403).json({ error: "จัดการได้เฉพาะขวดของโรงพยาบาลตัวเอง" });
+    const to = req.body?.to_state || NEXT_STATE[v.state];
+    if (NEXT_STATE[v.state] !== to)
+      return res.status(400).json({ error: `เปลี่ยนสถานะ ${v.state} → ${to} ไม่ได้ (state machine)` });
+
+    const stateSince = new Date().toISOString();   // เวลาเกิด event จริง
+    let eff;
+    try {  // โมดูล 1 (Dynamic Expire) — overwrite วันหมดอายุจริงตาม event
+      const r = await fetch(`${ENGINE_URL}/engine/expire`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          state: to, label_expiry: v.label_expiry, state_since: stateSince,
+          thawed_life_days: v.thawed_life_days, open_life_hours: v.open_life_hours,
+        }),
+      });
+      eff = (await r.json()).effective_expiry;
+    } catch (e) {
+      return res.status(502).json({ error: "vaccine-engine ไม่ตอบ: " + e.message });
+    }
+    await pool.query(
+      "UPDATE vaccine_vial SET state=$1, state_since=$2, effective_expiry=$3 WHERE vial_id=$4",
+      [to, stateSince, eff, v.vial_id]);
+    await logAudit(req, "vial_transition", "vaccine_vial", v.vial_id,
+                   `${v.state} → ${to} · overwrite อายุขัยตาม event (effective_expiry=${eff})`);
+    const st = await pool.query(
+      `SELECT state, status, ROUND(days_remaining::numeric, 2) AS days_remaining, effective_expiry
+       FROM vaccine_vial_status WHERE vial_id = $1`, [v.vial_id]);
+    res.json({ vial_id: v.vial_id, ...st.rows[0] });
   } catch (e) { next(e); }
 });
 

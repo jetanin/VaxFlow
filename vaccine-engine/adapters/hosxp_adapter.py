@@ -1,7 +1,7 @@
 """HOSxP adapter (Tier 2 — Read-only DB Connector)
 
-อ่านจาก **view ที่ตัด PII แล้ว** ของ Mock HOSxP (MySQL) ผ่าน user `vaxflow_ro`
-ที่มีสิทธิ์ SELECT เฉพาะ `vw_vaxflow_*` เท่านั้น — แตะ `patient`/`opitemrece` ดิบไม่ได้
+อ่านจาก **view ที่ตัด PII แล้ว** ของ Mock HOSxP (MySQL) ผ่าน user `vacflow_ro`
+ที่มีสิทธิ์ SELECT เฉพาะ `vw_vacflow_*` เท่านั้น — แตะ `patient`/`opitemrece` ดิบไม่ได้
 
 output ของ view ออกแบบให้ตรงกับ canonical schema เดิม (`docs/hospital_data_schema.md`)
 → Mapper เหลือแค่ map `tmt_code -> product_id`
@@ -27,7 +27,7 @@ def fetch_drug_usage(since: str):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT usage_date, drug_code, qty_dispensed "
-            "FROM vw_vaxflow_drug_usage WHERE usage_date >= %s "
+            "FROM vw_vacflow_drug_usage WHERE usage_date >= %s "
             "ORDER BY usage_date, drug_code",
             (since,),
         )
@@ -37,7 +37,7 @@ def fetch_drug_usage(since: str):
 def fetch_inventory(snapshot_date: str | None = None):
     """สถานะคลังระดับ lot (ไม่มี PII) — ป้อน Dynamic Expire."""
     sql = ("SELECT snapshot_date, drug_code, warehouse, lot_no, stock_on_hand, expire_date "
-           "FROM vw_vaxflow_inventory")
+           "FROM vw_vacflow_inventory")
     params = ()
     if snapshot_date:
         sql += " WHERE snapshot_date = %s"
@@ -52,7 +52,7 @@ def fetch_drug_master():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT drug_code, name, units, tmt_code, is_vaccine "
-            "FROM vw_vaxflow_drug_master"
+            "FROM vw_vacflow_drug_master"
         )
         return cur.fetchall()
 

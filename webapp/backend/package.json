@@ -1,7 +1,7 @@
 {
-  "name": "vaxflow-backend",
+  "name": "vacflow-backend",
   "version": "1.0.0",
-  "description": "VaxFlow API — serves vaccine vial-level inventory + borrow from Postgres",
+  "description": "VacFlow API — serves vaccine vial-level inventory + borrow from Postgres",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

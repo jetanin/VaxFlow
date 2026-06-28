@@ -1,6 +1,6 @@
 const jwt = require("jsonwebtoken");
 
-const SECRET = process.env.JWT_SECRET || "vaxflow-dev-secret-change-me";
+const SECRET = process.env.JWT_SECRET || "vacflow-dev-secret-change-me";
 const EXPIRES = "8h";
 
 function signToken(payload) {

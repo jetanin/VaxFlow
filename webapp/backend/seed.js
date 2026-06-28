@@ -1,4 +1,4 @@
-// Seed Postgres จากไฟล์ CSV ที่ mount ไว้ที่ /seed (VaxFlow — โดเมนวัคซีน)
+// Seed Postgres จากไฟล์ CSV ที่ mount ไว้ที่ /seed (VacFlow — โดเมนวัคซีน)
 // - /seed/data/hospitals/hospital_master.csv
 // - /seed/data/vaccine/{vaccine_product,vaccine_vial,appointment_queue,vaccine_branches}.csv
 const fs = require("fs");
@@ -10,7 +10,8 @@ const { hisEnabled, waitForHis, fetchVaccineDomain } = require("./hisFetch");
 
 // docker: /seed (mount ../data, ../models) · local dev: repo root (webapp/backend/../..)
 const SEED_DIR = process.env.SEED_DIR || path.resolve(__dirname, "../..");
-const DEFAULT_PASSWORD = process.env.DEFAULT_PASSWORD || "vaxflow123";
+const DEFAULT_PASSWORD = process.env.DEFAULT_PASSWORD || "vacflow123";
+const ENGINE_URL = process.env.ENGINE_URL || "http://vaccine-engine:8500";  // Predictive Matching Engine
 
 function readCsv(relPath) {
   const full = path.join(SEED_DIR, relPath);
@@ -49,7 +50,7 @@ async function ensureSchema() {
     CREATE TABLE IF NOT EXISTS borrow_documents (
       borrow_id INTEGER PRIMARY KEY, filename TEXT, mime TEXT, data_b64 TEXT,
       uploaded_by TEXT, uploaded_at TIMESTAMPTZ DEFAULT now());
-    -- VaxFlow: โดเมนวัคซีน (vial-level)
+    -- VacFlow: โดเมนวัคซีน (vial-level)
     ALTER TABLE hospitals ADD COLUMN IF NOT EXISTS transport_rate DOUBLE PRECISION;
     CREATE TABLE IF NOT EXISTS vaccine_product (
       product_id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL,
@@ -93,6 +94,10 @@ async function ensureSchema() {
       status TEXT NOT NULL DEFAULT 'suggested',
       created_at TIMESTAMPTZ DEFAULT now(), dispatched_at TIMESTAMPTZ,
       UNIQUE (hospital_id, product_id));
+    -- ระยะทางตามถนนจริงระหว่าง รพ. (precompute จาก OSRM) — ใช้แทน haversine
+    CREATE TABLE IF NOT EXISTS hospital_distance (
+      from_hospital TEXT, to_hospital TEXT, distance_km DOUBLE PRECISION,
+      PRIMARY KEY (from_hospital, to_hospital));
   `);
 }
 
@@ -136,6 +141,91 @@ async function recomputeOrders() {
   return r.rowCount;
 }
 
+function _median(arr) {
+  const a = arr.filter((x) => x > 0).sort((x, y) => x - y);
+  if (!a.length) return 0;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+// แผนโอนย้าย (Transportation Model) — เรียก vaccine-engine /engine/match (LP ตรงสูตร Proposal §3.2.2)
+//   screen_at_risk : supply = โดสเสี่ยง 🔴 ขนส่งได้ ของสาขา "บริโภคต่ำกว่าเกณฑ์" (สาขาใช้เร็วเก็บไว้เอง)
+//   solve_transport: min Z=ΣΣc·x · demand=D(j) · c=ระยะถนนจริง×rate  (แทนสูตร REWARD เดิมที่ไม่ตรง PDF)
+//   เขียนผล analytics_transshipment · ถ้า engine ล่ม → คง CSV เดิม (best-effort, return -1)
+async function recomputeTransshipment() {
+  try {
+    const prod = await pool.query(
+      `SELECT product_id, SUM(doses_remaining) AS risk FROM vaccine_vial_status
+       WHERE status='red' AND transportable GROUP BY product_id ORDER BY risk DESC LIMIT 1`);
+    if (!prod.rows[0]) { console.log("[transship] ไม่มีของเสี่ยงที่ขนส่งได้ — ข้าม"); return 0; }
+    const pid = prod.rows[0].product_id;
+    const hs = (await pool.query("SELECT hospital_id FROM hospitals ORDER BY hospital_id")).rows
+      .map((r) => r.hospital_id);
+
+    const sup = await pool.query(
+      `SELECT hospital_id, SUM(doses_remaining) AS s FROM vaccine_vial_status
+       WHERE product_id=$1 AND status='red' AND transportable GROUP BY hospital_id`, [pid]);
+    const dem = await pool.query(
+      `SELECT hospital_id, AVG(slot_count) AS d FROM appointment_queue
+       WHERE product_id=$1 GROUP BY hospital_id`, [pid]);
+    const supMap = Object.fromEntries(sup.rows.map((r) => [r.hospital_id, Number(r.s)]));
+    const demMap = Object.fromEntries(dem.rows.map((r) => [r.hospital_id, Number(r.d)]));
+
+    // screen_at_risk: ระบายเฉพาะสาขาที่บริโภคต่ำกว่า median (ตรง §3.2.2 — สาขาใช้เร็วไม่ต้องโอนออก)
+    const thr = _median(hs.map((h) => demMap[h] || 0));
+    let supply = hs.map((h) => ((demMap[h] || 0) < thr ? (supMap[h] || 0) : 0));
+    if (supply.reduce((a, b) => a + b, 0) === 0) supply = hs.map((h) => supMap[h] || 0); // fallback
+    const demand = hs.map((h) => Math.round(demMap[h] || 0));
+
+    // cost matrix c(i,j) = ระยะถนนจริง(กม.) × transport_rate(ปลายทาง)
+    const dist = await pool.query("SELECT from_hospital, to_hospital, distance_km FROM hospital_distance");
+    const dm = {};
+    for (const r of dist.rows) dm[`${r.from_hospital}|${r.to_hospital}`] = Number(r.distance_km);
+    const rateRows = await pool.query("SELECT hospital_id, COALESCE(transport_rate,15) AS rate FROM hospitals");
+    const rate = Object.fromEntries(rateRows.rows.map((r) => [r.hospital_id, Number(r.rate)]));
+
+    // Time-Window constraint (§3.2.2): ห้ามเส้นทางที่ "ส่งไม่ทันก่อนวัคซีนหมดอายุ"
+    //   lead time ปลายทาง (วัน) >= อายุที่เหลือต่ำสุดของของเสี่ยงต้นทาง -> เส้นทางนั้นใช้ไม่ได้ (cost = BIG)
+    const rem = await pool.query(
+      `SELECT hospital_id, MIN(days_remaining) AS r FROM vaccine_vial_status
+       WHERE product_id=$1 AND status='red' AND transportable GROUP BY hospital_id`, [pid]);
+    const remMap = Object.fromEntries(rem.rows.map((r) => [r.hospital_id, Number(r.r)]));
+    const leadRows = await pool.query("SELECT hospital_id, COALESCE(lead_time_days,2) AS lt FROM hospitals");
+    const lead = Object.fromEntries(leadRows.rows.map((r) => [r.hospital_id, Number(r.lt)]));
+    const BIG = 1e9;
+    const LEAD_COST = 50;   // ค่าสัมประสิทธิ์เวลา (บาท/วัน lead time) — รวม "เวลา" เข้า objective (§4.1)
+    const feasible = (a, b) => lead[b] < (remMap[a] ?? Infinity);   // ส่งถึงก่อนหมดอายุ
+    // c(i,j) = ระยะถนนจริง×rate + lead_time×coefficient (Cost/Time Minimization)
+    const cost = hs.map((a) => hs.map((b) =>
+      a === b ? 0 : (feasible(a, b) ? (dm[`${a}|${b}`] ?? 9999) * rate[b] + lead[b] * LEAD_COST : BIG)));
+    // ตัด supply ของสาขาที่ไม่มีปลายทางส่งทันเวลาเลย (ช่วยไม่ได้ -> เป็น write-off ไม่ดันเข้า LP)
+    supply = hs.map((h, i) =>
+      (supply[i] > 0 && hs.some((b, j) => j !== i && feasible(h, b))) ? supply[i] : 0);
+
+    const resp = await fetch(`${ENGINE_URL}/engine/match`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nodes: hs, supply, demand, cost }),
+    });
+    const out = await resp.json();
+    if (!out.feasible) { console.warn("[transship] engine: infeasible"); return 0; }
+    await pool.query("DELETE FROM analytics_transshipment");
+    let n = 0;
+    for (const m of out.moves) {
+      if (m.doses > 0.5) {
+        await pool.query(
+          `INSERT INTO analytics_transshipment (from_hospital, to_hospital, doses, product_id)
+           VALUES ($1,$2,$3,$4)`, [m.from, m.to, m.doses, pid]);
+        n++;
+      }
+    }
+    console.log(`[transship] engine plan (${pid}): ${n} เส้นทาง · Z=${out.total_cost}`);
+    return n;
+  } catch (e) {
+    console.error("[transship] engine recompute ข้าม (คง CSV เดิม):", e.message);
+    return -1;
+  }
+}
+
 // แปลงเป็นตัวเลข (คืน null ถ้าว่าง/ไม่ใช่ตัวเลข) สำหรับ seed ผลวิเคราะห์
 function num(v) {
   if (v === undefined || v === null || String(v).trim() === "") return null;
@@ -155,7 +245,7 @@ async function loadCsvTable(table, relPath, cols, rowMap) {
   console.log(`[seed] ${table}: ${rows.length}`);
 }
 
-// VaxFlow: seed ผลลัพธ์จาก notebook (ML/Optimization) จาก data/vaccine/outputs/*.csv
+// VacFlow: seed ผลลัพธ์จาก notebook (ML/Optimization) จาก data/vaccine/outputs/*.csv
 async function seedAnalytics() {
   await loadCsvTable("analytics_forecast",
     "data/vaccine/outputs/forecast_model_selection.csv",
@@ -217,10 +307,14 @@ async function seed() {
   await seedUsers(hospitals);
 
   await seedVaccine();
+  await loadCsvTable("hospital_distance", "data/hospitals/distance_matrix.csv",
+    ["from_hospital", "to_hospital", "distance_km"],
+    (r) => [r.from_hospital, r.to_hospital, num(r.distance_km)]);
   await seedAnalytics();
   await pruneHospitals(hospitals.map((h) => h.hospital_id));
   await seedBorrowDemo();
-  await recomputeOrders();   // คำนวณคำแนะนำการสั่งซื้อตั้งต้นจากข้อมูลสด
+  await recomputeOrders();        // คำแนะนำการสั่งซื้อตั้งต้นจากข้อมูลสด
+  await recomputeTransshipment(); // แผนโอนย้ายจาก engine (override CSV ด้วยผล LP ตรงสูตร)
 }
 
 // สร้างคำขอยืมตัวอย่างระหว่าง รพ. — ให้เห็นว่า "มี รพ.ที่ยืมกันได้" จริง
@@ -266,8 +360,8 @@ async function pruneHospitals(ids) {
   if (r.rowCount) console.log(`[seed] pruned ${r.rowCount} stale hospitals (ไม่อยู่ใน CSV)`);
 }
 
-// VaxFlow: seed โดเมนวัคซีน (vial-level)
-//   แหล่งข้อมูล: Mock HOSxP (per-hospital) ถ้าตั้ง HIS_DB_HOST → fetch จาก view (vaxflow_ro)
+// VacFlow: seed โดเมนวัคซีน (vial-level)
+//   แหล่งข้อมูล: Mock HOSxP (per-hospital) ถ้าตั้ง HIS_DB_HOST → fetch จาก view (vacflow_ro)
 //   ถ้า HIS ไม่พร้อม/ไม่ได้ตั้ง → fallback อ่านจาก CSV (data/vaccine/*.csv)
 async function seedVaccine() {
   let his = null;
@@ -340,7 +434,7 @@ async function seedVaccine() {
   console.log(`[seed] appointment_queue: ${queue.length} (counts, no PII)`);
 }
 
-module.exports = { seed, recomputeOrders };
+module.exports = { seed, recomputeOrders, recomputeTransshipment };
 
 if (require.main === module) {
   const { waitForDb } = require("./db");

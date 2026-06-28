@@ -1,6 +1,6 @@
-# 📋 VaxFlow — Proposal (PDF) Conformance Review
+# 📋 VacFlow — Proposal (PDF) Conformance Review
 
-> ตรวจสอบโค้ดของโปรเจกต์เทียบกับ **VaxFlow.pdf** แล้ว (1) ปรับให้ตรงตาม spec ที่ถูกต้อง
+> ตรวจสอบโค้ดของโปรเจกต์เทียบกับ **VacFlow.pdf** แล้ว (1) ปรับให้ตรงตาม spec ที่ถูกต้อง
 > และ (2) บันทึกจุดที่ **PDF ไม่ถูกต้อง/ขัดแย้งกันเอง** พร้อมเหตุผลที่ implementation เลือกทำต่างออกไป
 > ทบทวนเมื่อ: 2026-06-27
 
@@ -65,7 +65,7 @@ PDF (§4.2): 🟡 = สต็อกสะสม **สูงกว่าค่า
 → เป็น **simplification** (ไม่ใช่ PDF error) — ส่วน days-of-supply/over-stock มีในฝั่ง notebook (forecast) แล้ว ถ้าต้องการให้ครบควรนำดีมานด์พยากรณ์มา seed เข้า webapp
 
 ### 7. ข้อผิดพลาดเล็กน้อย (typos)
-- หน้าปก: **"VacFlow"** (ควรเป็น "VaxFlow")
+- หน้าปก: **"VacFlow"** (ควรเป็น "VacFlow")
 - §4.4 ข้อ 4: **"Financialศาสตราภิวัฒน์"** — ข้อความปนเปื้อน/พิมพ์ผิด (น่าจะตั้งใจเขียน "Financial Feasibility")
 
 ---

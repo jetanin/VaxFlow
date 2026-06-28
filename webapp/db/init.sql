@@ -1,4 +1,4 @@
--- VaxFlow — Postgres schema
+-- VacFlow — Postgres schema
 -- ตารางถูกสร้างอัตโนมัติตอน container แรกเริ่ม (docker-entrypoint-initdb.d)
 -- การ seed ข้อมูลจาก CSV ทำโดย backend (seed.js)
 
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);
 
 -- ════════════════════════════════════════════════════════════════════════
--- VaxFlow — โดเมนวัคซีน (สารชีววัตถุ) : เพิ่มเหนือโครง VaxFlow เดิม
+-- VacFlow — โดเมนวัคซีน (สารชีววัตถุ) : เพิ่มเหนือโครง VacFlow เดิม
 -- ของเดิมเก็บคลังแบบ aggregate รายวัน (ตาราง forecasts) ซึ่งติดตาม "ขวดที่เปิดแล้ว"
 -- ไม่ได้ → วัคซีนต้องลงลึกถึงระดับขวด (vial) เพราะอายุหลังเปิดขวดสั้นเพียง 6 ชม.
 -- ════════════════════════════════════════════════════════════════════════

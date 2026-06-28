@@ -1,4 +1,4 @@
-"""VaxFlow retrainer job — เทรนโมเดลใหม่ + โหลดผลเข้า webapp
+"""VacFlow retrainer job — เทรนโมเดลใหม่ + โหลดผลเข้า webapp
 
 1) รัน notebook pipeline (03 feature → 04 train → 05 eval) แบบ headless
    → regenerate data/vaccine/outputs/*.csv (forecast/model_comparison/transshipment/wastage)

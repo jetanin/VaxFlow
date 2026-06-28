@@ -45,16 +45,16 @@ export default function Analytics() {
     <div style={{ display: "grid", gap: 16 }}>
       {/* ── Wastage Simulation ── */}
       <div className="panel">
-        <h2>♻️ Wastage Simulation — Without vs With VaxFlow</h2>
+        <h2>♻️ Wastage Simulation — Without vs With VacFlow</h2>
         {wastage.length === 0 ? (
           <p className="muted">ยังไม่มีผล — รัน <code>notebook/05_model_evaluation.ipynb</code> แล้ว reseed</p>
         ) : (
           <>
             {reduction != null && (
               <div className="kpi-row" style={{ marginBottom: 12 }}>
-                <div className="kpi"><div className="label">โดสสูญเสีย (ไม่มี VaxFlow)</div>
+                <div className="kpi"><div className="label">โดสสูญเสีย (ไม่มี VacFlow)</div>
                   <div className="value">{Number(without.total_waste).toLocaleString()}</div></div>
-                <div className="kpi"><div className="label">โดสสูญเสีย (มี VaxFlow)</div>
+                <div className="kpi"><div className="label">โดสสูญเสีย (มี VacFlow)</div>
                   <div className="value">{Number(withVf?.total_waste ?? 0).toLocaleString()}</div></div>
                 <div className="kpi"><div className="label">ลดการสูญเสีย</div>
                   <div className="value" style={{ color: reduction >= 30 ? "var(--green)" : "var(--yellow)" }}>

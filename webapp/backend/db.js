@@ -4,9 +4,9 @@ const { Pool } = require("pg");
 const pool = new Pool({
   host: process.env.PGHOST || "db",
   port: parseInt(process.env.PGPORT || "5432", 10),
-  user: process.env.PGUSER || "vaxflow",
-  password: process.env.PGPASSWORD || "vaxflow",
-  database: process.env.PGDATABASE || "vaxflow",
+  user: process.env.PGUSER || "vacflow",
+  password: process.env.PGPASSWORD || "vacflow",
+  database: process.env.PGDATABASE || "vacflow",
 });
 
 // รอจน Postgres พร้อม (container db อาจบูตช้ากว่า backend)

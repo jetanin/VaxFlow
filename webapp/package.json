@@ -1,8 +1,8 @@
 {
-  "name": "vaxflow-webapp",
+  "name": "vacflow-webapp",
   "version": "1.0.0",
   "private": true,
-  "description": "VaxFlow web app — รัน backend + frontend พร้อมกันสำหรับ dev",
+  "description": "VacFlow web app — รัน backend + frontend พร้อมกันสำหรับ dev",
   "scripts": {
     "install:all": "npm --prefix backend install && npm --prefix frontend install",
     "db": "docker compose up db adminer",

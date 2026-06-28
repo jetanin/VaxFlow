@@ -1,12 +1,12 @@
 // Fetch โดเมนวัคซีน (per-hospital) จาก Mock HOSxP (MySQL) ผ่าน view ที่ตัด PII แล้ว
-// VaxFlow เชื่อมด้วย user read-only (vaxflow_ro) — อ่านได้เฉพาะ vw_vaxflow_* เท่านั้น
+// VacFlow เชื่อมด้วย user read-only (vacflow_ro) — อ่านได้เฉพาะ vw_vacflow_* เท่านั้น
 // ถ้าไม่ตั้ง HIS_DB_HOST → ปิดการ fetch (seed จะ fallback ไป CSV)
 const mysql = require("mysql2/promise");
 
 const CFG = {
   host: process.env.HIS_DB_HOST,
   port: parseInt(process.env.HIS_DB_PORT || "3306", 10),
-  user: process.env.HIS_DB_USER || "vaxflow_ro",
+  user: process.env.HIS_DB_USER || "vacflow_ro",
   password: process.env.HIS_DB_PASS || "",
   database: process.env.HIS_DB_NAME || "mock_hosxp",
   connectTimeout: 5000,
@@ -39,11 +39,11 @@ async function fetchVaccineDomain() {
     const [products] = await conn.query(
       `SELECT product_id, name, type, doses_per_vial,
               deep_frozen_life_days, thawed_life_days, open_life_hours
-       FROM vw_vaxflow_vaccine_product`);
+       FROM vw_vacflow_vaccine_product`);
     const [vials] = await conn.query(
       `SELECT vial_id, lot_id, product_id, hospital_id, state, state_since,
               doses_remaining, label_expiry, effective_expiry
-       FROM vw_vaxflow_vaccine_vial`);
+       FROM vw_vacflow_vaccine_vial`);
     return { products, vials };
   } finally {
     await conn.end();

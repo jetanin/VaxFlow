@@ -1,11 +1,11 @@
 -- Mock HIS เลียนแบบ HOSxP (MySQL) — Tier 2 Read-only DB Connector
 -- ตารางอิงโครงสร้างจริงของ HOSxP (drugitems / opitemrece / wh_drug_balance)
--- *มีตาราง patient ที่มี PII โดยตั้งใจ* เพื่อพิสูจน์ว่า VaxFlow แตะไม่ได้
+-- *มีตาราง patient ที่มี PII โดยตั้งใจ* เพื่อพิสูจน์ว่า VacFlow แตะไม่ได้
 CREATE DATABASE IF NOT EXISTS mock_hosxp
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;   -- utf8mb4 กันภาษาไทยเพี้ยน
 USE mock_hosxp;
 
--- ===== มี PII (มีไว้เพื่อพิสูจน์ว่า VaxFlow แตะไม่ได้) =====
+-- ===== มี PII (มีไว้เพื่อพิสูจน์ว่า VacFlow แตะไม่ได้) =====
 CREATE TABLE patient (
   hn       VARCHAR(15) PRIMARY KEY,
   cid      CHAR(13),
@@ -55,7 +55,7 @@ CREATE TABLE hospital_info (
   longitude   DECIMAL(9,6)
 );
 
--- ===== โดเมนวัคซีน (vial-level) ต่อโรงพยาบาล — แหล่งข้อมูลจริงที่ VaxFlow มา fetch =====
+-- ===== โดเมนวัคซีน (vial-level) ต่อโรงพยาบาล — แหล่งข้อมูลจริงที่ VacFlow มา fetch =====
 -- ไม่มี PII (เป็นข้อมูลคลังระดับขวด) — เก็บ timestamp เป็น VARCHAR เพื่อคง ISO+timezone
 CREATE TABLE vaccine_product (
   product_id            VARCHAR(30) PRIMARY KEY,

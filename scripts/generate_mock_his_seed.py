@@ -3,7 +3,7 @@
 ดึง "วัคซีนทั้งหมด" จาก data/vaccine/vaccine_product.csv (master เดียวกับ webapp — มาจาก อย.)
 มาลงตาราง drugitems ของ Mock HIS แล้วผูก:
   - opitemrece      : การจ่ายวัคซีน 45 วันย้อนหลัง (มี hn = PII)
-  - wh_drug_balance : คลังระดับ lot — 1 ล็อตต่อวัคซีน วน red/yellow/green ให้ VaxFlow จับ
+  - wh_drug_balance : คลังระดับ lot — 1 ล็อตต่อวัคซีน วน red/yellow/green ให้ VacFlow จับ
 
 รันซ้ำได้ผลคงที่ (deterministic) — ผลลัพธ์ overwrite ไฟล์ 02_seed.sql
 """
@@ -76,13 +76,13 @@ def main():
     lines.append("USE mock_hosxp;")
     lines.append("")
 
-    # ── hospital_info (13 แห่ง ตรงกับ HOSP_001..013 ของ VaxFlow + user login) ──
+    # ── hospital_info (13 แห่ง ตรงกับ HOSP_001..013 ของ VacFlow + user login) ──
     lines.append("INSERT INTO hospital_info (hospital_id, name, latitude, longitude) VALUES")
     rows = [f"('{hid}','{q(name)}',{lat},{lon})" for hid, name, lat, lon in HOSPITALS]
     lines.append(",\n".join(rows) + ";")
     lines.append("")
 
-    # ── patient (PII สังเคราะห์ — มีไว้พิสูจน์ว่า VaxFlow แตะไม่ได้) ──
+    # ── patient (PII สังเคราะห์ — มีไว้พิสูจน์ว่า VacFlow แตะไม่ได้) ──
     lines.append("-- ผู้ป่วยจำลอง (PII สังเคราะห์ — เลขบัตร/ชื่อไม่ใช่ของจริง)")
     lines.append("INSERT INTO patient (hn, cid, fname, lname, birthday, tel) VALUES")
     rows = [f"('{hn}','{cid}','{q(f)}','{q(l)}','{bd}','{tel}')"
@@ -117,7 +117,7 @@ def main():
     lines.append("")
 
     # ── wh_drug_balance : คลังระดับ lot — 1 ล็อตต่อวัคซีน วน red/yellow/green ──
-    lines.append("-- คลังระดับ lot — 1 ล็อตต่อวัคซีน จงใจวน แดง/เหลือง/เขียว ให้ VaxFlow จับ")
+    lines.append("-- คลังระดับ lot — 1 ล็อตต่อวัคซีน จงใจวน แดง/เหลือง/เขียว ให้ VacFlow จับ")
     lines.append("INSERT INTO wh_drug_balance (warehouse, icode, lot_no, qty, expire_date, snapshot_date) VALUES")
     rows = []
     for i, p in enumerate(products):
@@ -129,7 +129,7 @@ def main():
     lines.append(",\n".join(rows) + ";")
     lines.append("")
 
-    # ── โดเมนวัคซีน (vial-level) ต่อ รพ. — แหล่งข้อมูลจริงที่ VaxFlow มา fetch ──
+    # ── โดเมนวัคซีน (vial-level) ต่อ รพ. — แหล่งข้อมูลจริงที่ VacFlow มา fetch ──
     def emit_chunked(table, cols, value_rows, chunk=500):
         lines.append(f"-- {table}: {len(value_rows)} แถว")
         for i in range(0, len(value_rows), chunk):

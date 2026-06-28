@@ -1,6 +1,6 @@
 // เรียก backend ผ่าน /api (dev: vite proxy, prod: nginx proxy)
 const BASE = "/api";
-const TOKEN_KEY = "vaxflow_token";
+const TOKEN_KEY = "vacflow_token";
 
 // ใช้ sessionStorage (ไม่ใช่ localStorage): token อยู่แค่ในแท็บนั้น
 // → ปิดแท็บ = token หาย = ต้อง login ใหม่ · refresh ในแท็บเดิม = token ยังอยู่
@@ -8,12 +8,12 @@ export const auth = {
   get token() { return sessionStorage.getItem(TOKEN_KEY); },
   set token(v) { v ? sessionStorage.setItem(TOKEN_KEY, v) : sessionStorage.removeItem(TOKEN_KEY); },
   get hospital() {
-    const h = sessionStorage.getItem("vaxflow_hospital");
+    const h = sessionStorage.getItem("vacflow_hospital");
     return h ? JSON.parse(h) : null;
   },
   set hospital(v) {
-    v ? sessionStorage.setItem("vaxflow_hospital", JSON.stringify(v))
-      : sessionStorage.removeItem("vaxflow_hospital");
+    v ? sessionStorage.setItem("vacflow_hospital", JSON.stringify(v))
+      : sessionStorage.removeItem("vacflow_hospital");
   },
   logout() { this.token = null; this.hospital = null; },
 };
@@ -80,4 +80,7 @@ export const api = {
   orders: () => req("/orders"),
   dispatchOrder: (id) => req(`/orders/${id}/dispatch`, { method: "POST" }),
   retrain: () => req("/retrain", { method: "POST" }),
+  // dynamic expire — จำลอง event ละลาย/เปิดขวด → overwrite อายุขัย (เปลี่ยนสถานะอัตโนมัติ)
+  transitionVial: (vialId, toState) =>
+    req(`/vials/${vialId}/transition`, { method: "POST", body: JSON.stringify(toState ? { to_state: toState } : {}) }),
 };

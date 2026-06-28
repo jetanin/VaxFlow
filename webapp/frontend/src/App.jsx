@@ -63,7 +63,7 @@ export default function App() {
     <div className="app">
       <div className="topbar">
         <div>
-          <h1 className="title">💉 VaxFlow — Predictive Vaccine Shared Inventory</h1>
+          <h1 className="title">💉 VacFlow — Predictive Vaccine Shared Inventory</h1>
           <p className="subtitle">เครือข่ายแบ่งปันวัคซีน · ลด Vaccine Wastage</p>
         </div>
         <div className="user-box">
@@ -105,7 +105,7 @@ export default function App() {
         {activeTab === "audit" && <AuditTrail />}
       </div>
 
-      <p className="subtitle" style={{ marginTop: 16 }}>VaxFlow · Logistics Innovation Hackathon 2026</p>
+      <p className="subtitle" style={{ marginTop: 16 }}>VacFlow · Logistics Innovation Hackathon 2026</p>
     </div>
   );
 }
