@@ -69,7 +69,57 @@ async function ensureSchema() {
                   WHEN v.effective_expiry <= now() + interval '21 days' THEN 'yellow'
                   ELSE 'green' END AS status
       FROM vaccine_vial v JOIN vaccine_product p ON p.product_id = v.product_id;
+    -- ผลลัพธ์จาก notebook (ML/Optimization) — seed จาก data/vaccine/outputs/*.csv
+    CREATE TABLE IF NOT EXISTS analytics_forecast (
+      hospital_id TEXT, product_id TEXT, sma7_rmse DOUBLE PRECISION,
+      best_alpha DOUBLE PRECISION, es_rmse DOUBLE PRECISION, winner TEXT);
+    CREATE TABLE IF NOT EXISTS analytics_model_comparison (
+      model TEXT, mae DOUBLE PRECISION, rmse DOUBLE PRECISION, r2 DOUBLE PRECISION);
+    CREATE TABLE IF NOT EXISTS analytics_transshipment (
+      from_hospital TEXT, to_hospital TEXT, doses DOUBLE PRECISION, product_id TEXT);
+    CREATE TABLE IF NOT EXISTS analytics_wastage (
+      scenario TEXT, expiry_waste DOUBLE PRECISION,
+      openvial_waste DOUBLE PRECISION, total_waste DOUBLE PRECISION);
   `);
+}
+
+// แปลงเป็นตัวเลข (คืน null ถ้าว่าง/ไม่ใช่ตัวเลข) สำหรับ seed ผลวิเคราะห์
+function num(v) {
+  if (v === undefined || v === null || String(v).trim() === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// โหลด CSV ลงตารางแบบ replace ทั้งตาราง (ข้ามถ้าไม่มีไฟล์ → ไม่ลบของเดิม)
+async function loadCsvTable(table, relPath, cols, rowMap) {
+  const rows = readCsv(relPath);
+  if (rows.length === 0) { console.warn(`[seed] ${table}: ข้าม(ไม่มีข้อมูล ${relPath})`); return; }
+  await pool.query(`DELETE FROM ${table}`);
+  const ph = cols.map((_, i) => `$${i + 1}`).join(",");
+  for (const r of rows) {
+    await pool.query(`INSERT INTO ${table} (${cols.join(",")}) VALUES (${ph})`, rowMap(r));
+  }
+  console.log(`[seed] ${table}: ${rows.length}`);
+}
+
+// VaxFlow: seed ผลลัพธ์จาก notebook (ML/Optimization) จาก data/vaccine/outputs/*.csv
+async function seedAnalytics() {
+  await loadCsvTable("analytics_forecast",
+    "data/vaccine/outputs/forecast_model_selection.csv",
+    ["hospital_id", "product_id", "sma7_rmse", "best_alpha", "es_rmse", "winner"],
+    (r) => [r.hospital_id, r.product_id, num(r.sma7_rmse), num(r.best_alpha), num(r.es_rmse), r.winner]);
+  await loadCsvTable("analytics_model_comparison",
+    "data/vaccine/outputs/model_comparison.csv",
+    ["model", "mae", "rmse", "r2"],
+    (r) => [r.model, num(r.MAE), num(r.RMSE), num(r.R2)]);
+  await loadCsvTable("analytics_transshipment",
+    "data/vaccine/outputs/transshipment_plan.csv",
+    ["from_hospital", "to_hospital", "doses", "product_id"],
+    (r) => [r.from_hospital, r.to_hospital, num(r.doses), r.product_id]);
+  await loadCsvTable("analytics_wastage",
+    "data/vaccine/outputs/wastage_simulation.csv",
+    ["scenario", "expiry_waste", "openvial_waste", "total_waste"],
+    (r) => [r.scenario, num(r.expiry_waste), num(r.openvial_waste), num(r.total_waste)]);
 }
 
 async function seedUsers(hospitals) {
@@ -108,6 +158,7 @@ async function seed() {
   await seedUsers(hospitals);
 
   await seedVaccine();
+  await seedAnalytics();
 }
 
 // VaxFlow: seed โดเมนวัคซีน (vial-level) จาก data/vaccine/*.csv

@@ -528,6 +528,69 @@ app.get("/api/alerts", requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------- ANALYTICS (ผลจาก notebook: ML/Optimization) ----------
+// เปรียบเทียบโมเดล + Wastage = ระดับเครือข่าย (เห็นได้ทุกคน) · Forecast/Transshipment = scope ตาม รพ.
+
+// เปรียบเทียบโมเดลพยากรณ์ (RandomForest/XGBoost/...) เรียง RMSE
+app.get("/api/analytics/models", requireAuth, async (_req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT model, mae, rmse, r2 FROM analytics_model_comparison ORDER BY rmse ASC NULLS LAST`);
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// Wastage Simulation (Without vs With VaxFlow) — พิสูจน์ KPI ลดการสูญเสีย
+app.get("/api/analytics/wastage", requireAuth, async (_req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT scenario, expiry_waste, openvial_waste, total_waste FROM analytics_wastage`);
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// การเลือกโมเดลพยากรณ์ต่อ (รพ.×ผลิตภัณฑ์) — hospital เห็นเฉพาะของตัวเอง
+app.get("/api/analytics/forecast", requireAuth, async (req, res, next) => {
+  try {
+    const scope = scopedHospital(req);
+    const params = [];
+    let where = "";
+    if (scope) { params.push(scope); where = `WHERE f.hospital_id = $${params.length}`; }
+    const { rows } = await pool.query(`
+      SELECT f.hospital_id, h.name AS hospital_name, f.product_id, p.name AS product_name,
+             f.sma7_rmse, f.best_alpha, f.es_rmse, f.winner
+      FROM analytics_forecast f
+      LEFT JOIN hospitals h ON h.hospital_id = f.hospital_id
+      LEFT JOIN vaccine_product p ON p.product_id = f.product_id
+      ${where}
+      ORDER BY GREATEST(f.sma7_rmse, f.es_rmse) DESC NULLS LAST`, params);
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// แผนโอนย้ายล็อตเสี่ยง (Transportation Model) — hospital เห็นเฉพาะที่เกี่ยวข้องกับตัวเอง
+app.get("/api/analytics/transshipment", requireAuth, async (req, res, next) => {
+  try {
+    const scope = scopedHospital(req);
+    const params = [];
+    let where = "";
+    if (scope) {
+      params.push(scope);
+      where = `WHERE t.from_hospital = $${params.length} OR t.to_hospital = $${params.length}`;
+    }
+    const { rows } = await pool.query(`
+      SELECT t.from_hospital, hf.name AS from_name, t.to_hospital, ht.name AS to_name,
+             t.doses, t.product_id, p.name AS product_name
+      FROM analytics_transshipment t
+      LEFT JOIN hospitals hf ON hf.hospital_id = t.from_hospital
+      LEFT JOIN hospitals ht ON ht.hospital_id = t.to_hospital
+      LEFT JOIN vaccine_product p ON p.product_id = t.product_id
+      ${where}
+      ORDER BY t.doses DESC`, params);
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ error: err.message });

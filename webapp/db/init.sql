@@ -131,3 +131,23 @@ SELECT v.vial_id, v.lot_id, v.product_id, v.hospital_id, v.state, v.state_since,
          ELSE 'green' END                               AS status
 FROM vaccine_vial v
 JOIN vaccine_product p ON p.product_id = v.product_id;
+
+-- ════════════════════════════════════════════════════════════════════════
+-- ผลลัพธ์จาก notebook (ML/Optimization) — seed จาก data/vaccine/outputs/*.csv โดย seed.js
+-- เป็นผลวิเคราะห์ "อ่านอย่างเดียว" (snapshot) แยกจากข้อมูลคลังสด
+-- ════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS analytics_forecast (            -- forecast_model_selection.csv
+    hospital_id TEXT, product_id TEXT,
+    sma7_rmse DOUBLE PRECISION, best_alpha DOUBLE PRECISION,
+    es_rmse DOUBLE PRECISION, winner TEXT
+);
+CREATE TABLE IF NOT EXISTS analytics_model_comparison (    -- model_comparison.csv
+    model TEXT, mae DOUBLE PRECISION, rmse DOUBLE PRECISION, r2 DOUBLE PRECISION
+);
+CREATE TABLE IF NOT EXISTS analytics_transshipment (       -- transshipment_plan.csv
+    from_hospital TEXT, to_hospital TEXT, doses DOUBLE PRECISION, product_id TEXT
+);
+CREATE TABLE IF NOT EXISTS analytics_wastage (             -- wastage_simulation.csv
+    scenario TEXT, expiry_waste DOUBLE PRECISION,
+    openvial_waste DOUBLE PRECISION, total_waste DOUBLE PRECISION
+);

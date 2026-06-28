@@ -71,4 +71,9 @@ export const api = {
   // alerts + audit
   alerts: () => req("/alerts"),
   audit: () => req("/audit"),
+  // analytics (ผลจาก notebook: ML/Optimization)
+  analyticsModels: () => req("/analytics/models"),
+  analyticsWastage: () => req("/analytics/wastage"),
+  analyticsForecast: () => req("/analytics/forecast"),
+  analyticsTransshipment: () => req("/analytics/transshipment"),
 };

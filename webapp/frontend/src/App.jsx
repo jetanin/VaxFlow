@@ -6,11 +6,13 @@ import Borrow from "./components/Borrow.jsx";
 import Alerts from "./components/Alerts.jsx";
 import AuditTrail from "./components/AuditTrail.jsx";
 import Vaccines from "./components/Vaccines.jsx";
+import Analytics from "./components/Analytics.jsx";
 
 // hospitalOnly = แสดงเฉพาะผู้ใช้ระดับโรงพยาบาล (admin เป็นผู้ดูภาพรวม ไม่ทำรายการยืม)
 const ALL_TABS = [
   { id: "map", label: "🗺️ Overview Map" },
   { id: "vaccines", label: "💉 วัคซีนทั้งหมด" },
+  { id: "analytics", label: "📊 วิเคราะห์ (AI)" },
   { id: "alerts", label: "🔔 แจ้งเตือน", hospitalOnly: true },
   { id: "borrow", label: "🤝 ยืมวัคซีน", hospitalOnly: true },
   { id: "audit", label: "📜 Audit Trail", adminOnly: true },
@@ -92,6 +94,7 @@ export default function App() {
       <div key={activeTab}>
         {activeTab === "map" && <OverviewMap hospitals={hospitals} />}
         {activeTab === "vaccines" && <Vaccines />}
+        {activeTab === "analytics" && <Analytics />}
         {activeTab === "alerts" && <Alerts />}
         {activeTab === "borrow" && <Borrow />}
         {activeTab === "audit" && <AuditTrail />}
