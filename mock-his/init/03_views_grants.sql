@@ -35,11 +35,28 @@ FROM drugitems;
 CREATE USER IF NOT EXISTS 'vaxflow_ro'@'%'
   IDENTIFIED BY 'CHANGE_ME_strong_pw';
 
+-- 4) โดเมนวัคซีน (vial-level) ต่อ รพ. — VaxFlow มา fetch จาก view เหล่านี้ (ไม่มี PII)
+CREATE OR REPLACE
+  SQL SECURITY DEFINER
+  VIEW vw_vaxflow_vaccine_product AS
+SELECT product_id, name, type, doses_per_vial,
+       deep_frozen_life_days, thawed_life_days, open_life_hours
+FROM vaccine_product;
+
+CREATE OR REPLACE
+  SQL SECURITY DEFINER
+  VIEW vw_vaxflow_vaccine_vial AS
+SELECT vial_id, lot_id, product_id, hospital_id, state, state_since,
+       doses_remaining, label_expiry, effective_expiry
+FROM vaccine_vial;
+
 -- ให้สิทธิ์ SELECT เฉพาะ "view" เท่านั้น — ไม่ให้แตะตารางดิบเลย
-GRANT SELECT ON mock_hosxp.vw_vaxflow_drug_usage  TO 'vaxflow_ro'@'%';
-GRANT SELECT ON mock_hosxp.vw_vaxflow_inventory   TO 'vaxflow_ro'@'%';
-GRANT SELECT ON mock_hosxp.vw_vaxflow_drug_master TO 'vaxflow_ro'@'%';
--- (ไม่มี GRANT ใด ๆ บน patient / opitemrece / wh_drug_balance)
+GRANT SELECT ON mock_hosxp.vw_vaxflow_drug_usage      TO 'vaxflow_ro'@'%';
+GRANT SELECT ON mock_hosxp.vw_vaxflow_inventory       TO 'vaxflow_ro'@'%';
+GRANT SELECT ON mock_hosxp.vw_vaxflow_drug_master     TO 'vaxflow_ro'@'%';
+GRANT SELECT ON mock_hosxp.vw_vaxflow_vaccine_product TO 'vaxflow_ro'@'%';
+GRANT SELECT ON mock_hosxp.vw_vaxflow_vaccine_vial    TO 'vaxflow_ro'@'%';
+-- (ไม่มี GRANT ใด ๆ บน patient / opitemrece / wh_drug_balance / ตารางดิบ)
 
 FLUSH PRIVILEGES;
 

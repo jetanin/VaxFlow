@@ -6,6 +6,7 @@ const path = require("path");
 const bcrypt = require("bcryptjs");
 const { parse } = require("csv-parse/sync");
 const { pool } = require("./db");
+const { hisEnabled, waitForHis, fetchVaccineDomain } = require("./hisFetch");
 
 // docker: /seed (mount ../data, ../models) · local dev: repo root (webapp/backend/../..)
 const SEED_DIR = process.env.SEED_DIR || path.resolve(__dirname, "../..");
@@ -31,6 +32,9 @@ async function ensureSchema() {
       id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
       hospital_id TEXT, role TEXT NOT NULL DEFAULT 'hospital', created_at TIMESTAMPTZ DEFAULT now());
     ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'hospital';
+    -- อนุญาต role 'director' (ผอ.รพ) — แทนที่ CHECK เดิมแบบ idempotent (DB เก่ามีแค่ admin|hospital)
+    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+    ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','hospital','director'));
     ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_key TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_key_expires TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ;
@@ -80,7 +84,56 @@ async function ensureSchema() {
     CREATE TABLE IF NOT EXISTS analytics_wastage (
       scenario TEXT, expiry_waste DOUBLE PRECISION,
       openvial_waste DOUBLE PRECISION, total_waste DOUBLE PRECISION);
+    -- คำแนะนำการสั่งซื้อ (reorder) — recompute จากข้อมูลสดทุกครั้งที่อัปเดต/ยืม
+    CREATE TABLE IF NOT EXISTS order_recommendations (
+      id SERIAL PRIMARY KEY, hospital_id TEXT, product_id TEXT,
+      on_hand DOUBLE PRECISION, avg_daily_demand DOUBLE PRECISION,
+      lead_time_days INTEGER, reorder_point DOUBLE PRECISION,
+      recommended_vials INTEGER, recommended_doses INTEGER,
+      status TEXT NOT NULL DEFAULT 'suggested',
+      created_at TIMESTAMPTZ DEFAULT now(), dispatched_at TIMESTAMPTZ,
+      UNIQUE (hospital_id, product_id));
   `);
+}
+
+// reorder model: คำนวณคำแนะนำการสั่งซื้อใหม่จากข้อมูลสด (คลัง 🟢/🟡 + ดีมานด์คิวนัด + lead time)
+//   ROP = avg_daily × lead × (1+safety) · สั่งเมื่อคลังต่ำกว่า ROP ให้ครอบคลุม (lead+coverage) วัน
+// เก็บเฉพาะที่ต้องสั่ง · ไม่แตะรายการที่ 'dispatched' แล้ว (ON CONFLICT DO NOTHING)
+const COVERAGE_DAYS = 14;
+const SAFETY = 0.2;
+async function recomputeOrders() {
+  await pool.query("DELETE FROM order_recommendations WHERE status='suggested'");
+  const r = await pool.query(`
+    WITH demand AS (
+      SELECT hospital_id, product_id, AVG(slot_count)::float AS avg_daily
+      FROM appointment_queue GROUP BY hospital_id, product_id),
+    stock AS (
+      SELECT hospital_id, product_id,
+             COALESCE(SUM(doses_remaining) FILTER
+               (WHERE status IN ('green','yellow') AND transportable), 0) AS usable
+      FROM vaccine_vial_status GROUP BY hospital_id, product_id),
+    calc AS (
+      SELECT h.hospital_id, p.product_id, GREATEST(p.doses_per_vial,1) AS dpv,
+             COALESCE(h.lead_time_days,2) AS lead,
+             COALESCE(d.avg_daily,0) AS avg_daily, COALESCE(s.usable,0) AS on_hand
+      FROM hospitals h CROSS JOIN vaccine_product p
+      LEFT JOIN demand d ON d.hospital_id=h.hospital_id AND d.product_id=p.product_id
+      LEFT JOIN stock  s ON s.hospital_id=h.hospital_id AND s.product_id=p.product_id)
+    INSERT INTO order_recommendations
+      (hospital_id, product_id, on_hand, avg_daily_demand, lead_time_days,
+       reorder_point, recommended_vials, recommended_doses, status)
+    SELECT hospital_id, product_id, on_hand, round(avg_daily::numeric,2), lead,
+           round((avg_daily*lead*(1+$1::numeric))::numeric,1),
+           ceil((avg_daily*($2::numeric+lead) - on_hand)/dpv)::int,
+           ceil((avg_daily*($2::numeric+lead) - on_hand)/dpv)::int * dpv,
+           'suggested'
+    FROM calc
+    WHERE avg_daily > 0
+      AND on_hand <= avg_daily*lead*(1+$1::numeric)
+      AND avg_daily*($2::numeric+lead) - on_hand > 0
+    ON CONFLICT (hospital_id, product_id) DO NOTHING`, [SAFETY, COVERAGE_DAYS]);
+  console.log(`[reorder] recomputed: ${r.rowCount} suggestions`);
+  return r.rowCount;
 }
 
 // แปลงเป็นตัวเลข (คืน null ถ้าว่าง/ไม่ใช่ตัวเลข) สำหรับ seed ผลวิเคราะห์
@@ -129,14 +182,20 @@ async function seedUsers(hospitals) {
     `INSERT INTO users (username, password_hash, hospital_id, role)
      VALUES ('admin', $1, NULL, 'admin') ON CONFLICT (username) DO NOTHING`, [hash]);
   // hospital users: username = hospital_id, role = hospital
+  // director users (ผอ.รพ): username = <hospital_id>_director, role = director — เห็นเฉพาะ รพ.ตัวเอง
   for (const h of hospitals) {
     await pool.query(
       `INSERT INTO users (username, password_hash, hospital_id, role)
        VALUES ($1, $2, $3, 'hospital') ON CONFLICT (username) DO NOTHING`,
       [h.hospital_id, hash, h.hospital_id]
     );
+    await pool.query(
+      `INSERT INTO users (username, password_hash, hospital_id, role)
+       VALUES ($1, $2, $3, 'director') ON CONFLICT (username) DO NOTHING`,
+      [`${h.hospital_id}_director`, hash, h.hospital_id]
+    );
   }
-  console.log(`[seed] users: 1 admin + ${hospitals.length} hospital (password = "${DEFAULT_PASSWORD}")`);
+  console.log(`[seed] users: 1 admin + ${hospitals.length} hospital + ${hospitals.length} director (ผอ.รพ) (password = "${DEFAULT_PASSWORD}")`);
 }
 
 async function seed() {
@@ -161,6 +220,7 @@ async function seed() {
   await seedAnalytics();
   await pruneHospitals(hospitals.map((h) => h.hospital_id));
   await seedBorrowDemo();
+  await recomputeOrders();   // คำนวณคำแนะนำการสั่งซื้อตั้งต้นจากข้อมูลสด
 }
 
 // สร้างคำขอยืมตัวอย่างระหว่าง รพ. — ให้เห็นว่า "มี รพ.ที่ยืมกันได้" จริง
@@ -206,9 +266,25 @@ async function pruneHospitals(ids) {
   if (r.rowCount) console.log(`[seed] pruned ${r.rowCount} stale hospitals (ไม่อยู่ใน CSV)`);
 }
 
-// VaxFlow: seed โดเมนวัคซีน (vial-level) จาก data/vaccine/*.csv
+// VaxFlow: seed โดเมนวัคซีน (vial-level)
+//   แหล่งข้อมูล: Mock HOSxP (per-hospital) ถ้าตั้ง HIS_DB_HOST → fetch จาก view (vaxflow_ro)
+//   ถ้า HIS ไม่พร้อม/ไม่ได้ตั้ง → fallback อ่านจาก CSV (data/vaccine/*.csv)
 async function seedVaccine() {
-  const products = readCsv("data/vaccine/vaccine_product.csv");
+  let his = null;
+  if (hisEnabled()) {
+    if (await waitForHis()) {
+      try {
+        his = await fetchVaccineDomain();
+        console.log(`[seed] HIS fetch: ${his.products.length} products, ${his.vials.length} vials (per-hospital)`);
+      } catch (e) {
+        console.warn("[seed] HIS fetch ล้มเหลว → fallback CSV:", e.message);
+      }
+    } else {
+      console.warn("[seed] เชื่อม Mock HOSxP ไม่ได้ → fallback CSV");
+    }
+  }
+
+  const products = his ? his.products : readCsv("data/vaccine/vaccine_product.csv");
   for (const p of products) {
     await pool.query(
       `INSERT INTO vaccine_product
@@ -233,7 +309,7 @@ async function seedVaccine() {
   }
   console.log(`[seed] transport_rate updated: ${branches.length} branches`);
 
-  const vials = readCsv("data/vaccine/vaccine_vial.csv");
+  const vials = his ? his.vials : readCsv("data/vaccine/vaccine_vial.csv");
   for (const v of vials) {
     await pool.query(
       `INSERT INTO vaccine_vial
@@ -264,7 +340,7 @@ async function seedVaccine() {
   console.log(`[seed] appointment_queue: ${queue.length} (counts, no PII)`);
 }
 
-module.exports = { seed };
+module.exports = { seed, recomputeOrders };
 
 if (require.main === module) {
   const { waitForDb } = require("./db");

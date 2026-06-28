@@ -7,12 +7,14 @@ import Alerts from "./components/Alerts.jsx";
 import AuditTrail from "./components/AuditTrail.jsx";
 import Vaccines from "./components/Vaccines.jsx";
 import Analytics from "./components/Analytics.jsx";
+import Orders from "./components/Orders.jsx";
 
 // hospitalOnly = แสดงเฉพาะผู้ใช้ระดับโรงพยาบาล (admin เป็นผู้ดูภาพรวม ไม่ทำรายการยืม)
 const ALL_TABS = [
   { id: "map", label: "🗺️ Overview Map" },
   { id: "vaccines", label: "💉 วัคซีนทั้งหมด" },
   { id: "analytics", label: "📊 วิเคราะห์ (AI)" },
+  { id: "orders", label: "📦 สั่งซื้อ → HOSxP" },
   { id: "alerts", label: "🔔 แจ้งเตือน", hospitalOnly: true },
   { id: "borrow", label: "🤝 ยืมวัคซีน", hospitalOnly: true },
   { id: "audit", label: "📜 Audit Trail", adminOnly: true },
@@ -52,6 +54,7 @@ export default function App() {
 
   const me = auth.hospital;
   const isAdmin = me?.role === "admin";
+  const isDirector = me?.role === "director";
   // admin เห็นทุกแท็บ; hospital ไม่เห็นแท็บ adminOnly
   const TABS = ALL_TABS.filter((t) => isAdmin || !t.adminOnly);
   const activeTab = TABS.some((t) => t.id === tab) ? tab : "map";
@@ -64,8 +67,9 @@ export default function App() {
           <p className="subtitle">เครือข่ายแบ่งปันวัคซีน · ลด Vaccine Wastage</p>
         </div>
         <div className="user-box">
-          <span className="muted">{isAdmin ? "🛡️ " : "🏥 "}{me?.name || me?.hospital_id}</span>
-          <span className={`badge ${isAdmin ? "red" : "green"}`}>{isAdmin ? "ADMIN" : "HOSPITAL"}</span>
+          <span className="muted">{isAdmin ? "🛡️ " : isDirector ? "🧑‍⚕️ " : "🏥 "}{me?.name || me?.hospital_id}</span>
+          <span className={`badge ${isAdmin ? "red" : isDirector ? "yellow" : "green"}`}>
+            {isAdmin ? "ADMIN" : isDirector ? "ผอ.รพ." : "HOSPITAL"}</span>
           <button className="tab" onClick={async () => {
             try { await api.logoutServer(); } catch { /* best-effort */ }
             auth.logout(); setAuthed(false);
@@ -95,6 +99,7 @@ export default function App() {
         {activeTab === "map" && <OverviewMap hospitals={hospitals} />}
         {activeTab === "vaccines" && <Vaccines />}
         {activeTab === "analytics" && <Analytics />}
+        {activeTab === "orders" && <Orders />}
         {activeTab === "alerts" && <Alerts />}
         {activeTab === "borrow" && <Borrow />}
         {activeTab === "audit" && <AuditTrail />}

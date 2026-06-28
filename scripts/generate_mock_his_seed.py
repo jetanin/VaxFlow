@@ -129,8 +129,39 @@ def main():
     lines.append(",\n".join(rows) + ";")
     lines.append("")
 
+    # ── โดเมนวัคซีน (vial-level) ต่อ รพ. — แหล่งข้อมูลจริงที่ VaxFlow มา fetch ──
+    def emit_chunked(table, cols, value_rows, chunk=500):
+        lines.append(f"-- {table}: {len(value_rows)} แถว")
+        for i in range(0, len(value_rows), chunk):
+            part = value_rows[i:i + chunk]
+            lines.append(f"INSERT INTO {table} ({', '.join(cols)}) VALUES")
+            lines.append(",\n".join(part) + ";")
+        lines.append("")
+
+    prod = pd.read_csv(ROOT / "data" / "vaccine" / "vaccine_product.csv",
+                       encoding="utf-8-sig").to_dict("records")
+    emit_chunked(
+        "vaccine_product",
+        ["product_id", "name", "type", "doses_per_vial",
+         "deep_frozen_life_days", "thawed_life_days", "open_life_hours"],
+        [f"('{q(p['product_id'])}','{q(p['name'])}','{q(p['type'])}',"
+         f"{int(p['doses_per_vial'])},{int(p['deep_frozen_life_days'])},"
+         f"{int(p['thawed_life_days'])},{int(p['open_life_hours'])})" for p in prod])
+
+    vial = pd.read_csv(ROOT / "data" / "vaccine" / "vaccine_vial.csv",
+                       encoding="utf-8-sig").to_dict("records")
+    emit_chunked(
+        "vaccine_vial",
+        ["vial_id", "lot_id", "product_id", "hospital_id", "state", "state_since",
+         "doses_remaining", "label_expiry", "effective_expiry"],
+        [f"('{q(v['vial_id'])}','{q(v['lot_id'])}','{q(v['product_id'])}',"
+         f"'{q(v['hospital_id'])}','{q(v['state'])}','{q(v['state_since'])}',"
+         f"{int(v['doses_remaining'])},'{v['label_expiry']}','{q(v['effective_expiry'])}')"
+         for v in vial])
+
     OUT.write_text("\n".join(lines), encoding="utf-8")
-    print(f"[saved] {OUT.relative_to(ROOT)}: {len(df)} vaccines -> drugitems + {len(df)} lots")
+    print(f"[saved] {OUT.relative_to(ROOT)}: {len(df)} vaccines, "
+          f"{len(prod)} products, {len(vial)} vials (per-hospital)")
 
 
 if __name__ == "__main__":

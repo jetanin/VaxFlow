@@ -54,3 +54,28 @@ CREATE TABLE hospital_info (
   latitude    DECIMAL(9,6),
   longitude   DECIMAL(9,6)
 );
+
+-- ===== โดเมนวัคซีน (vial-level) ต่อโรงพยาบาล — แหล่งข้อมูลจริงที่ VaxFlow มา fetch =====
+-- ไม่มี PII (เป็นข้อมูลคลังระดับขวด) — เก็บ timestamp เป็น VARCHAR เพื่อคง ISO+timezone
+CREATE TABLE vaccine_product (
+  product_id            VARCHAR(30) PRIMARY KEY,
+  name                  VARCHAR(255),
+  type                  VARCHAR(20),
+  doses_per_vial        INT,
+  deep_frozen_life_days INT,
+  thawed_life_days      INT,
+  open_life_hours       INT
+);
+
+CREATE TABLE vaccine_vial (
+  vial_id          VARCHAR(20) PRIMARY KEY,
+  lot_id           VARCHAR(40),
+  product_id       VARCHAR(30),
+  hospital_id      VARCHAR(15),          -- ข้อมูลของแต่ละ รพ.
+  state            VARCHAR(15),          -- DEEP_FROZEN | THAWED | OPENED
+  state_since      VARCHAR(40),          -- ISO+tz
+  doses_remaining  INT,
+  label_expiry     DATE,
+  effective_expiry VARCHAR(40),          -- ISO+tz
+  KEY (hospital_id), KEY (product_id)
+);

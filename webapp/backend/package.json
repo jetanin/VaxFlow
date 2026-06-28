@@ -15,6 +15,7 @@
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "maxmind": "^4.3.24",
+    "mysql2": "^3.11.5",
     "pg": "^8.13.1"
   },
   "devDependencies": {

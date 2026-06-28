@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     hospital_id   TEXT REFERENCES hospitals(hospital_id),  -- NULL = admin (ดูได้ทุก รพ.)
-    role          TEXT NOT NULL DEFAULT 'hospital'         -- 'admin' | 'hospital'
-                  CHECK (role IN ('admin', 'hospital')),
+    role          TEXT NOT NULL DEFAULT 'hospital'         -- 'admin' | 'hospital' | 'director' (ผอ.รพ)
+                  CHECK (role IN ('admin', 'hospital', 'director')),
     reset_key         TEXT,          -- คีย์ 4 หลักสำหรับเปลี่ยนรหัส (ออกโดย admin)
     reset_key_expires TIMESTAMPTZ,
     last_seen         TIMESTAMPTZ,    -- heartbeat ล่าสุด (online ถ้าใกล้ปัจจุบัน) · NULL = offline/logout
@@ -151,3 +151,24 @@ CREATE TABLE IF NOT EXISTS analytics_wastage (             -- wastage_simulation
     scenario TEXT, expiry_waste DOUBLE PRECISION,
     openvial_waste DOUBLE PRECISION, total_waste DOUBLE PRECISION
 );
+
+-- คำแนะนำการสั่งซื้อ (reorder) — คำนวณใหม่จากข้อมูลสดทุกครั้งที่ข้อมูลอัปเดต/มีการยืม
+-- dispatched = ส่งเป็น "คำสั่งซื้อ" ไปยังระบบ HOSxP แล้ว (HIS connector อ่านอย่างเดียว
+-- จึงสร้างเป็น PO command ให้เจ้าหน้าที่ HOSxP รับไปออกใบสั่งจริง)
+CREATE TABLE IF NOT EXISTS order_recommendations (
+    id                SERIAL PRIMARY KEY,
+    hospital_id       TEXT REFERENCES hospitals(hospital_id),
+    product_id        TEXT REFERENCES vaccine_product(product_id),
+    on_hand           DOUBLE PRECISION,     -- โดสใช้ได้ (🟢/🟡 ขนส่งได้)
+    avg_daily_demand  DOUBLE PRECISION,     -- ดีมานด์เฉลี่ย/วัน (จากคิวนัด)
+    lead_time_days    INTEGER,
+    reorder_point     DOUBLE PRECISION,     -- ROP = demand×lead×(1+safety)
+    recommended_vials INTEGER,
+    recommended_doses INTEGER,
+    status            TEXT NOT NULL DEFAULT 'suggested'   -- suggested | dispatched
+                      CHECK (status IN ('suggested', 'dispatched')),
+    created_at        TIMESTAMPTZ DEFAULT now(),
+    dispatched_at     TIMESTAMPTZ,
+    UNIQUE (hospital_id, product_id)
+);
+CREATE INDEX IF NOT EXISTS idx_order_hospital ON order_recommendations(hospital_id);

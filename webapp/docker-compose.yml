@@ -16,6 +16,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # Mock HOSxP (MySQL) — แหล่งข้อมูลจริงต่อโรงพยาบาล (per-hospital vial-level)
+  # VaxFlow backend มา fetch ผ่าน view (vaxflow_ro) แทนการ seed จาก CSV ตรง ๆ
+  mock-his:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: mock_hosxp
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ../mock-his/init:/docker-entrypoint-initdb.d:ro   # schema+seed+views (รันครั้งแรก)
+      - mockhis_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prootpw"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   adminer:
     image: adminer:latest
     restart: unless-stopped
@@ -37,6 +54,12 @@ services:
       RESEED_TOKEN: vaxflow-reseed   # token ภายในสำหรับ retrainer เรียก /api/reseed
       IP_GEO: maxmind                # maxmind (offline) | ipapi (online ระดับเขต)
       GEOIP_DB: /geoip/GeoLite2-City.mmdb
+      # Mock HOSxP — fetch โดเมนวัคซีนต่อ รพ. (ไม่ตั้ง = fallback อ่าน CSV)
+      HIS_DB_HOST: mock-his
+      HIS_DB_PORT: "3306"
+      HIS_DB_USER: vaxflow_ro        # read-only — อ่านได้เฉพาะ view ที่ตัด PII
+      HIS_DB_PASS: CHANGE_ME_strong_pw
+      HIS_DB_NAME: mock_hosxp
     volumes:
       # mount ข้อมูล (read-only) ให้ backend seed ลง Postgres
       - ../data:/seed/data:ro
@@ -44,6 +67,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      mock-his:
+        condition: service_started   # backend มี waitForHis retry เอง (init ครั้งแรกนาน)
     ports:
       - "4000:4000"
 
@@ -69,5 +94,38 @@ services:
       - "8080:80"     # HTTP (redirect -> HTTPS)
       - "8443:443"    # HTTPS (self-signed cert)
 
+  # เทรนโมเดลใหม่ตามตารางเวลา (ดีฟอลต์ 01:00 ทุกวัน) — รัน notebook pipeline แล้วสั่ง reseed
+  retrainer:
+    build: ../retrainer
+    cpus: "8.0"                     # จำกัด CPU (RF/MLP/Optuna ยังใช้ CPU) — มี 32 คอร์ -> ใช้ ≤8
+    # GPU: XGBoost ใช้ CUDA ได้ (nb04 probe จะตรวจเอง · ตัวอื่นยังเป็น CPU) — ต้องมี nvidia runtime
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      TZ: Asia/Bangkok
+      RUN_AT: "01:00"               # เวลาเทรนรายวัน (HH:MM ตามเวลาไทย)
+      BACKEND_URL: http://backend:4000
+      RESEED_TOKEN: vaxflow-reseed  # ต้องตรงกับ backend.RESEED_TOKEN
+      NB_TIMEOUT: "1800"            # timeout ต่อโน้ตบุ๊ก (วินาที)
+      VAXFLOW_MODELS: XGBoost       # nightly เทรนเฉพาะ XGBoost (GPU/CUDA) — เร็ว · ว่าง=ครบทุกตัว
+      VAXFLOW_N_TRIALS: "40"        # GPU เร็ว → จูน Optuna ได้มากขึ้น (รันมือใช้ดีฟอลต์ 25)
+      # จำกัด thread ของ BLAS/XGBoost/LightGBM ให้สอดคล้องลิมิต CPU (กัน oversubscribe)
+      OMP_NUM_THREADS: "8"
+      OPENBLAS_NUM_THREADS: "8"
+      MKL_NUM_THREADS: "8"
+      NUMEXPR_NUM_THREADS: "8"
+      # RUN_ON_START: "1"           # เปิดเพื่อเทรนทันทีตอนสตาร์ต (debug)
+    volumes:
+      - ..:/work                    # โค้ด+ข้อมูล (notebooks เขียน outputs ลง data/)
+    depends_on:
+      - backend
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  mockhis_data:

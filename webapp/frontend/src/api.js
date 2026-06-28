@@ -76,4 +76,8 @@ export const api = {
   analyticsWastage: () => req("/analytics/wastage"),
   analyticsForecast: () => req("/analytics/forecast"),
   analyticsTransshipment: () => req("/analytics/transshipment"),
+  // reorder / สั่งซื้อ → HOSxP
+  orders: () => req("/orders"),
+  dispatchOrder: (id) => req(`/orders/${id}/dispatch`, { method: "POST" }),
+  retrain: () => req("/retrain", { method: "POST" }),
 };

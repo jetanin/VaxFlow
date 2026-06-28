@@ -5,7 +5,7 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const maxmind = require("maxmind");
 const { pool, waitForDb } = require("./db");
-const { seed } = require("./seed");
+const { seed, recomputeOrders } = require("./seed");
 const { signToken, requireAuth, requireAdmin } = require("./auth");
 
 const app = express();
@@ -226,7 +226,9 @@ app.post("/api/login", async (req, res, next) => {
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
       return res.status(401).json({ error: "username หรือ password ไม่ถูกต้อง" });
     }
-    const name = user.role === "admin" ? "ผู้ดูแลระบบ (Admin)" : user.name;
+    const name = user.role === "admin" ? "ผู้ดูแลระบบ (Admin)"
+      : user.role === "director" ? `ผอ. ${user.name}`
+      : user.name;
     const token = signToken({ username: user.username, hospital_id: user.hospital_id, role: user.role, name });
     await pool.query("UPDATE users SET last_seen=now() WHERE username=$1", [user.username]);
     await logAudit({ user: { hospital_id: user.hospital_id || "admin" }, ip: req.ip },
@@ -427,6 +429,8 @@ app.patch("/api/borrow/:id", requireAuth, async (req, res, next) => {
                    "borrow_request", req.params.id,
                    `${status === "approved" ? "อนุมัติ" : "ปฏิเสธ"}คำขอ #${req.params.id} (${rows[0].product_id})`);
     res.json(rows[0]);
+    // ข้อมูลคลัง/ดีมานด์เปลี่ยนหลังการยืม → คำนวณคำแนะนำการสั่งซื้อใหม่ (retrain) แบบ fire-and-forget
+    recomputeOrders().catch((e) => console.error("[reorder] retrain failed:", e.message));
   } catch (e) { next(e); }
 });
 
@@ -588,6 +592,77 @@ app.get("/api/analytics/transshipment", requireAuth, async (req, res, next) => {
       ${where}
       ORDER BY t.doses DESC`, params);
     res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// ---------- REORDER / สั่งซื้อ → HOSxP ----------
+// product_id (อ้างอิง อย.) -> tmt_code กลาง สำหรับสั่งเข้า HOSxP
+// (ATC ฝังใน id: VAX_J07BX03_048 -> TMT-J07BX03 — ตรงกับ drugitems.tmt_code ของ Mock HOSxP)
+function tmtOf(productId) {
+  const parts = String(productId).split("_");
+  return parts.length >= 2 ? `TMT-${parts[1]}` : `TMT-${productId}`;
+}
+
+// retrain: คำนวณคำแนะนำการสั่งซื้อใหม่จากข้อมูลสด (เรียกเองหลังข้อมูลเปลี่ยน หรือ manual โดย admin)
+app.post("/api/retrain", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const n = await recomputeOrders();
+    await logAudit(req, "retrain_reorder", "order_recommendation", null,
+                   `คำนวณคำแนะนำการสั่งซื้อใหม่: ${n} รายการ`);
+    res.json({ ok: true, suggestions: n });
+  } catch (e) { next(e); }
+});
+
+// คำแนะนำการสั่งซื้อ — hospital เห็นเฉพาะของตัวเอง · เรียงตามจำนวนที่แนะนำให้สั่ง
+app.get("/api/orders", requireAuth, async (req, res, next) => {
+  try {
+    const scope = scopedHospital(req);
+    const params = [];
+    let where = "";
+    if (scope) { params.push(scope); where = `WHERE o.hospital_id = $${params.length}`; }
+    const { rows } = await pool.query(`
+      SELECT o.id, o.hospital_id, h.name AS hospital_name, o.product_id, p.name AS product_name,
+             p.type AS product_type, o.on_hand, o.avg_daily_demand, o.lead_time_days,
+             o.reorder_point, o.recommended_vials, o.recommended_doses, o.status, o.dispatched_at
+      FROM order_recommendations o
+      LEFT JOIN hospitals h ON h.hospital_id = o.hospital_id
+      LEFT JOIN vaccine_product p ON p.product_id = o.product_id
+      ${where}
+      ORDER BY o.status, o.recommended_doses DESC`, params);
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// สั่งซื้อ → HOSxP: สร้าง "คำสั่งซื้อ" (PO command) ส่งให้ระบบ HOSxP รับไปออกใบสั่งจริง
+//   HIS connector เป็น read-only (PDPA) จึงไม่เขียนตรง — VaxFlow ออกคำสั่ง, HOSxP ดำเนินการ
+app.post("/api/orders/:id/dispatch", requireAuth, async (req, res, next) => {
+  try {
+    const cur = await pool.query("SELECT * FROM order_recommendations WHERE id=$1", [req.params.id]);
+    const o = cur.rows[0];
+    if (!o) return res.status(404).json({ error: "ไม่พบคำแนะนำการสั่งซื้อ" });
+    if (req.user.role !== "admin" && req.user.hospital_id !== o.hospital_id)
+      return res.status(403).json({ error: "สั่งได้เฉพาะของโรงพยาบาลตัวเอง" });
+    if (o.status === "dispatched")
+      return res.status(409).json({ error: "คำสั่งซื้อนี้ส่งไป HOSxP แล้ว" });
+
+    // payload รูปแบบคำสั่งซื้อสำหรับ HOSxP (ใช้ icode = product_id, tmt_code กลาง)
+    const command = {
+      target: "HOSxP",
+      command: "PURCHASE_ORDER",
+      hospital_id: o.hospital_id,
+      issued_by: req.user.hospital_id || "admin",
+      issued_at: new Date().toISOString(),
+      items: [{
+        icode: o.product_id, tmt_code: tmtOf(o.product_id),
+        vials: o.recommended_vials, doses: o.recommended_doses,
+      }],
+      note: `เติมสต็อกตาม reorder point (คงเหลือ ${Math.round(o.on_hand)} โดส · ROP ${Math.round(o.reorder_point)})`,
+    };
+    await pool.query(
+      "UPDATE order_recommendations SET status='dispatched', dispatched_at=now() WHERE id=$1", [o.id]);
+    await logAudit(req, "dispatch_order", "order_recommendation", o.id,
+                   `ส่งคำสั่งซื้อ ${o.product_id} (${o.recommended_vials} ขวด/${o.recommended_doses} โดส) → HOSxP`);
+    res.json({ ok: true, command });
   } catch (e) { next(e); }
 });
 
