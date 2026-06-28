@@ -345,7 +345,7 @@ app.get("/api/lenders", requireAuth, async (req, res, next) => {
        JOIN hospitals h ON h.hospital_id = v.hospital_id, me
        WHERE v.product_id = $1 AND v.status = 'green' AND v.transportable
          AND v.hospital_id <> $2
-       GROUP BY v.hospital_id, h.name, me.lat, me.lon
+       GROUP BY v.hospital_id, h.name, h.latitude, h.longitude, me.lat, me.lon
        ORDER BY distance_km ASC`,
       [product_id, req.user.hospital_id]);
     res.json(rows);

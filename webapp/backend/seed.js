@@ -159,6 +159,51 @@ async function seed() {
 
   await seedVaccine();
   await seedAnalytics();
+  await pruneHospitals(hospitals.map((h) => h.hospital_id));
+  await seedBorrowDemo();
+}
+
+// สร้างคำขอยืมตัวอย่างระหว่าง รพ. — ให้เห็นว่า "มี รพ.ที่ยืมกันได้" จริง
+// เคารพกติกาเดียวกับ /api/borrow: ผู้ขอมีขวด 🔴 · ผู้ให้มีขวด 🟢 ที่ขนส่งได้ · วัคซีนเดียวกัน
+// idempotent: seed เฉพาะตอนตารางว่าง (ไม่ทับคำขอจริงที่ผู้ใช้สร้าง)
+async function seedBorrowDemo() {
+  const { rows } = await pool.query("SELECT COUNT(*)::int AS c FROM borrow_requests");
+  if (rows[0].c > 0) { console.log(`[seed] borrow_requests: ${rows[0].c} (มีอยู่แล้ว ข้าม demo)`); return; }
+  // ชั้นใน: เลือกคู่ (ผู้ขอ 🔴 → ผู้ให้ 🟢) แบบสุ่ม 1 คู่ต่อผู้ขอ
+  // ชั้นนอก: คิด quantity/status/created_at ด้วย random() ต่อแถว (ให้หลากหลาย + มี approved)
+  const r = await pool.query(`
+    INSERT INTO borrow_requests (from_hospital, to_hospital, product_id, quantity, reason, status, created_at)
+    SELECT from_hospital, to_hospital, product_id,
+           (5 + floor(random() * 20))::int,
+           'คิวนัดเพิ่มฉับพลัน — ขอยืมชั่วคราว',
+           (ARRAY['pending','pending','approved','rejected'])[1 + floor(random() * 4)],
+           now() - (floor(random() * 72) || ' hours')::interval
+    FROM (
+      SELECT DISTINCT ON (red.hospital_id)
+             red.hospital_id AS from_hospital, grn.hospital_id AS to_hospital, red.product_id
+      FROM (SELECT DISTINCT hospital_id, product_id FROM vaccine_vial_status WHERE status='red') red
+      JOIN (SELECT DISTINCT hospital_id, product_id FROM vaccine_vial_status
+            WHERE status='green' AND transportable) grn
+        ON grn.product_id = red.product_id AND grn.hospital_id <> red.hospital_id
+      ORDER BY red.hospital_id, random()
+    ) picks`);
+  console.log(`[seed] borrow_requests: สร้างคำขอยืมตัวอย่าง ${r.rowCount} รายการ`);
+}
+
+// ลบ รพ./user/ข้อมูลที่อ้าง รพ. ซึ่ง "ไม่อยู่ใน CSV แล้ว" (เช่นเครือข่ายเดิม 100 -> 13)
+// ทำให้ DB sync กับ hospital_master.csv เสมอ — reseed ด้วย UPSERT อย่างเดียวไม่ลบของเก่าให้
+async function pruneHospitals(ids) {
+  if (!ids.length) return;
+  // ลบแถวที่อ้าง รพ.นอกชุด CSV ก่อน (กัน FK violation) แล้วค่อยลบ hospital เอง
+  await pool.query(`DELETE FROM users WHERE hospital_id IS NOT NULL AND hospital_id <> ALL($1)`, [ids]);
+  await pool.query(`DELETE FROM vaccine_vial WHERE hospital_id <> ALL($1)`, [ids]);
+  await pool.query(`DELETE FROM appointment_queue WHERE hospital_id <> ALL($1)`, [ids]);
+  await pool.query(
+    `DELETE FROM borrow_requests
+     WHERE (from_hospital IS NOT NULL AND from_hospital <> ALL($1))
+        OR (to_hospital   IS NOT NULL AND to_hospital   <> ALL($1))`, [ids]);
+  const r = await pool.query(`DELETE FROM hospitals WHERE hospital_id <> ALL($1)`, [ids]);
+  if (r.rowCount) console.log(`[seed] pruned ${r.rowCount} stale hospitals (ไม่อยู่ใน CSV)`);
 }
 
 // VaxFlow: seed โดเมนวัคซีน (vial-level) จาก data/vaccine/*.csv

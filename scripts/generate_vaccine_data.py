@@ -83,34 +83,50 @@ def main():
     print(f"[saved] vaccine_product.csv: {len(products)} products")
 
     # ── vial-level inventory ──────────────────────────────────────────────
+    # สุ่ม "สีเป้าหมาย" ต่อขวด (เขียว/เหลือง/แดง) แล้วตั้งวันหมดอายุให้ตรงสี
+    # → ทุกสาขามีครบทุกสถานะ (สอดคล้องเกณฑ์ view: 🔴<=14 วัน · 🟡<=21 วัน · 🟢)
+    COLORS = ["green", "yellow", "red"]
+    COLOR_W = [0.55, 0.22, 0.23]
     vials = []
     vid = 0
     for hid in BRANCHES:
         for _, p in products.iterrows():
             dpv = max(1, int(p["doses_per_vial"]))
-            n_vials = int(rng.integers(1, 4))           # 1–3 ขวดต่อผลิตภัณฑ์ต่อสาขา
-            # mRNA เท่านั้นที่มีสถานะแช่แข็งจัด; ตัวอื่นเก็บ 2–8°C (THAWED) ตั้งแต่ต้น
-            if p["type"] == "mRNA":
-                states, probs = ["DEEP_FROZEN", "THAWED", "OPENED"], [0.55, 0.30, 0.15]
-            else:
-                states, probs = ["THAWED", "OPENED"], [0.80, 0.20]
+            is_mrna = p["type"] == "mRNA"
+            thawed_days = int(p["thawed_life_days"])
+            open_hours = int(p["open_life_hours"])
+            n_vials = int(rng.integers(2, 5))           # 2–4 ขวดต่อผลิตภัณฑ์ต่อสาขา
             for _ in range(n_vials):
                 vid += 1
-                state = rng.choice(states, p=probs)
-                label_expiry = (NOW + timedelta(days=int(rng.integers(120, 360)))).date()
+                color = rng.choice(COLORS, p=COLOR_W)
+                # วันหมดอายุบนสลากตามสีเป้าหมาย (อิง NOW)
+                if color == "green":
+                    days = int(rng.integers(40, 360))
+                elif color == "yellow":
+                    days = int(rng.integers(15, 22))    # 15–21 วัน
+                else:
+                    days = int(rng.integers(1, 14))     # 1–13 วัน
+                label_expiry = (NOW + timedelta(days=days)).date()
 
-                if state == "DEEP_FROZEN":
-                    state_since = NOW - timedelta(days=int(rng.integers(1, 90)))
+                # red ส่วนหนึ่งเป็นขวดที่ "เปิดแล้ว" (OPENED, อายุสั้นเป็นชั่วโมง = แดงเสมอ)
+                if color == "red" and rng.random() < 0.45:
+                    state = "OPENED"
+                    state_since = NOW - timedelta(hours=float(rng.uniform(0, open_hours)))
+                    doses = max(1, int(rng.integers(0, dpv)))
+                    # สลากยังไกล แต่ effective สั้นเพราะเปิดขวด (โชว์เคส open-vial waste)
+                    label_expiry = (NOW + timedelta(days=int(rng.integers(30, 200)))).date()
+                else:
+                    # DEEP_FROZEN เฉพาะ mRNA; ตัวอื่นเก็บ 2–8°C (THAWED)
+                    state = "DEEP_FROZEN" if (is_mrna and rng.random() < 0.5) else "THAWED"
+                    if state == "THAWED":
+                        # state_since ใหม่ ๆ เพื่อให้ effective = label_expiry (คุมสีได้แม่น)
+                        state_since = NOW - timedelta(days=float(rng.uniform(0, min(thawed_days, 5))))
+                    else:
+                        state_since = NOW - timedelta(days=int(rng.integers(1, 60)))
                     doses = dpv
-                elif state == "THAWED":
-                    state_since = NOW - timedelta(days=int(rng.integers(0, 28)))
-                    doses = dpv
-                else:  # OPENED — เปิดมาแล้วไม่นาน
-                    state_since = NOW - timedelta(hours=float(rng.uniform(0, 6)))
-                    doses = int(rng.integers(0, dpv))
 
                 eff = effective_expiry(state, label_expiry, state_since,
-                                       int(p["thawed_life_days"]), int(p["open_life_hours"]))
+                                       thawed_days, open_hours)
                 vials.append({
                     "vial_id": f"VIAL_{vid:06d}",
                     "lot_id": f"LOT_{str(p['product_id'])[-3:]}_{state_since:%Y%m}",
