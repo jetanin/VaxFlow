@@ -329,8 +329,9 @@ function scopedHospital(req) {
 }
 
 // ---------- BORROW (ยืมวัคซีน) ----------
-// รพ. ที่ให้ยืมวัคซีนได้ = มีขวด "ขนส่งได้" (ไม่ใช่ OPENED) สถานะ 🟢 — เรียงตามระยะทาง GPS ใกล้สุด
-// (Smart Borrowing เดิม — Predictive Matching Engine จริงจะเข้ามาแทนใน Phase 3)
+// รพ. ที่ให้ยืมวัคซีนได้ = มีขวด "ขนส่งได้" (ไม่ใช่ OPENED) สถานะ 🟢 — เรียงตามระยะทางถนนจริงใกล้สุด
+// บทบาทแยกชัดจาก auto-transshipment: นี่คือ "shortlist สำหรับมนุษย์เลือกยืมเอง" (เภสัชกรกดขอ)
+// ส่วนการจับคู่โอนย้ายอัตโนมัติทั้งเครือข่ายใช้ engine LP (recomputeTransshipment → /engine/match)
 app.get("/api/lenders", requireAuth, async (req, res, next) => {
   try {
     const { product_id } = req.query;
@@ -534,9 +535,13 @@ app.get("/api/alerts", requireAuth, async (req, res, next) => {
     let ovCond = "";
     if (scope) { ovParams.push(scope); ovCond = ` AND s.hospital_id=$${ovParams.length}`; }
     const overstock = await pool.query(`
-      WITH demand AS (
-        SELECT hospital_id, product_id, AVG(slot_count)::float AS avg_daily
-        FROM appointment_queue GROUP BY hospital_id, product_id),
+      WITH demand AS (   -- ดีมานด์ = forecast จากโมเดล · fallback คิวนัด
+        SELECT COALESCE(f.hospital_id, q.hospital_id) AS hospital_id,
+               COALESCE(f.product_id, q.product_id)   AS product_id,
+               COALESCE(f.forecast_daily, q.avg_daily) AS avg_daily
+        FROM (SELECT hospital_id, product_id, AVG(slot_count)::float AS avg_daily
+              FROM appointment_queue GROUP BY hospital_id, product_id) q
+        FULL JOIN demand_forecast f USING (hospital_id, product_id)),
       stock AS (
         SELECT hospital_id, product_id,
                COALESCE(SUM(doses_remaining) FILTER
@@ -755,4 +760,7 @@ async function start() {
   app.listen(PORT, () => console.log(`[api] listening on :${PORT}`));
 }
 
-start();
+// export สำหรับ unit test · start เฉพาะตอนรันตรง (node server.js) ไม่ใช่ตอน require
+module.exports = { app, tmtOf, NEXT_STATE };
+
+if (require.main === module) start();

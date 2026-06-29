@@ -159,4 +159,17 @@ select { background: #0f172a; color: var(--text); border: 1px solid #334155;
   .print-only { display: inline !important; }   /* โชว์ข้อความวันที่/เวลา (ไม่มีกรอบ) */
   .memo-paper .ln { border-bottom: 1px dotted #333; }
   .memo-paper .ln-date { border: none !important; padding: 0; }
+  .memo-grid input.cell { border: none !important; }
 }
+
+/* ── ฟอร์มราชการ (ใบขออนุมัติยืม-คืน) ── */
+.memo-indent { text-indent: 2.5em; }
+.memo-grid { width: 100%; border-collapse: collapse; margin: 6px 0; }
+.memo-grid th, .memo-grid td { border: 1px solid #000; padding: 4px 6px; font-size: 0.9rem; }
+.memo-grid .c { text-align: center; }
+.memo-grid input.cell { width: 100%; border: none; outline: none; background: transparent; font: inherit; }
+.memo-signs3 { display: flex; justify-content: space-between; gap: 12px; margin-top: 28px; text-align: center; }
+.memo-signs3 > div { flex: 1; }
+.memo-chk { display: inline-block; width: 13px; height: 13px; border: 1px solid #000;
+            vertical-align: middle; margin: 0 6px 0 18px; }
+.memo-pagebreak { page-break-before: always; margin-top: 28px; border-top: 1px dashed #999; padding-top: 16px; }

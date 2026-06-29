@@ -34,7 +34,8 @@ services:
       retries: 10
 
   adminer:
-    image: adminer:latest
+    image: adminer:4
+    profiles: ["debug"]      # เครื่องมือ debug — start ด้วย: docker compose --profile debug up -d
     restart: unless-stopped
     depends_on:
       - db
@@ -51,7 +52,8 @@ services:
       PGDATABASE: vacflow
       SEED_DIR: /seed
       PORT: 4000
-      RESEED_TOKEN: vacflow-reseed   # token ภายในสำหรับ retrainer เรียก /api/reseed
+      JWT_SECRET: ${JWT_SECRET:-vacflow-dev-secret-change-me}   # ตั้งใน .env สำหรับ prod
+      RESEED_TOKEN: ${RESEED_TOKEN:-vacflow-reseed}   # token ภายในสำหรับ retrainer เรียก /api/reseed
       IP_GEO: maxmind                # maxmind (offline) | ipapi (online ระดับเขต)
       GEOIP_DB: /geoip/GeoLite2-City.mmdb
       # Mock HOSxP — fetch โดเมนวัคซีนต่อ รพ. (ไม่ตั้ง = fallback อ่าน CSV)
@@ -94,14 +96,15 @@ services:
     depends_on:
       - backend
     ports:
-      - "8080:80"     # HTTP (redirect -> HTTPS)
+      - "8090:80"     # HTTP (8080 ชนกับ ApplicationWebServer บน host → ใช้ 8090)
       - "8443:443"    # HTTPS (self-signed cert)
 
-  # เทรนโมเดลใหม่ตามตารางเวลา (ดีฟอลต์ 01:00 ทุกวัน) — รัน notebook pipeline แล้วสั่ง reseed
+  # เทรน/คำนวณใหม่ตามตารางเวลา (ดีฟอลต์ 01:00 ทุกวัน) — รัน pipeline-as-code แล้วสั่ง reseed
   retrainer:
     build: ../retrainer
+    profiles: ["train"]             # งานหนัก/รายวัน — start ด้วย: docker compose --profile train up -d
     cpus: "8.0"                     # จำกัด CPU (RF/MLP/Optuna ยังใช้ CPU) — มี 32 คอร์ -> ใช้ ≤8
-    # GPU: XGBoost ใช้ CUDA ได้ (nb04 probe จะตรวจเอง · ตัวอื่นยังเป็น CPU) — ต้องมี nvidia runtime
+    # GPU: XGBoost ใช้ CUDA ได้ (pipeline.train probe เอง · ตัวอื่นยังเป็น CPU) — ต้องมี nvidia runtime
     deploy:
       resources:
         reservations:
@@ -113,9 +116,10 @@ services:
       TZ: Asia/Bangkok
       RUN_AT: "01:00"               # เวลาเทรนรายวัน (HH:MM ตามเวลาไทย)
       BACKEND_URL: http://backend:4000
-      RESEED_TOKEN: vacflow-reseed  # ต้องตรงกับ backend.RESEED_TOKEN
-      NB_TIMEOUT: "1800"            # timeout ต่อโน้ตบุ๊ก (วินาที)
-      VACFLOW_MODELS: XGBoost       # nightly เทรนเฉพาะ XGBoost (GPU/CUDA) — เร็ว · ว่าง=ครบทุกตัว
+      RESEED_TOKEN: ${RESEED_TOKEN:-vacflow-reseed}  # ต้องตรงกับ backend.RESEED_TOKEN
+      VACFLOW_NOW: "2026-06-26T08:00:00+07:00"   # time anchor เดียว (P4) — ตั้งเป็นวันจริงได้
+      VACFLOW_TRAIN: "1"            # 1 = รัน ML benchmark (GPU) ด้วย · 0 = เฉพาะ pipeline หลัก
+      VACFLOW_MODELS: XGBoost       # ML benchmark เทรนเฉพาะ XGBoost (GPU/CUDA) — เร็ว · ว่าง=ครบ
       VACFLOW_N_TRIALS: "40"        # GPU เร็ว → จูน Optuna ได้มากขึ้น (รันมือใช้ดีฟอลต์ 25)
       # จำกัด thread ของ BLAS/XGBoost/LightGBM ให้สอดคล้องลิมิต CPU (กัน oversubscribe)
       OMP_NUM_THREADS: "8"

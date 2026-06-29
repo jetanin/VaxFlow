@@ -98,6 +98,10 @@ async function ensureSchema() {
     CREATE TABLE IF NOT EXISTS hospital_distance (
       from_hospital TEXT, to_hospital TEXT, distance_km DOUBLE PRECISION,
       PRIMARY KEY (from_hospital, to_hospital));
+    -- ดีมานด์พยากรณ์/วัน ต่อ (รพ.×product) จากโมเดล (nb04) — ป้อนเข้า reorder/transship/alert
+    CREATE TABLE IF NOT EXISTS demand_forecast (
+      hospital_id TEXT, product_id TEXT, method TEXT, forecast_daily DOUBLE PRECISION,
+      PRIMARY KEY (hospital_id, product_id));
   `);
 }
 
@@ -109,9 +113,13 @@ const SAFETY = 0.2;
 async function recomputeOrders() {
   await pool.query("DELETE FROM order_recommendations WHERE status='suggested'");
   const r = await pool.query(`
-    WITH demand AS (
-      SELECT hospital_id, product_id, AVG(slot_count)::float AS avg_daily
-      FROM appointment_queue GROUP BY hospital_id, product_id),
+    WITH demand AS (   -- ดีมานด์ = forecast จากโมเดล (ปิดวงจร ML) · fallback คิวนัด
+      SELECT COALESCE(f.hospital_id, q.hospital_id) AS hospital_id,
+             COALESCE(f.product_id, q.product_id)   AS product_id,
+             COALESCE(f.forecast_daily, q.avg_daily) AS avg_daily
+      FROM (SELECT hospital_id, product_id, AVG(slot_count)::float AS avg_daily
+            FROM appointment_queue GROUP BY hospital_id, product_id) q
+      FULL JOIN demand_forecast f USING (hospital_id, product_id)),
     stock AS (
       SELECT hospital_id, product_id,
              COALESCE(SUM(doses_remaining) FILTER
@@ -165,9 +173,13 @@ async function recomputeTransshipment() {
     const sup = await pool.query(
       `SELECT hospital_id, SUM(doses_remaining) AS s FROM vaccine_vial_status
        WHERE product_id=$1 AND status='red' AND transportable GROUP BY hospital_id`, [pid]);
-    const dem = await pool.query(
-      `SELECT hospital_id, AVG(slot_count) AS d FROM appointment_queue
-       WHERE product_id=$1 GROUP BY hospital_id`, [pid]);
+    const dem = await pool.query(   // ดีมานด์ปลายทาง = forecast (fallback คิวนัด)
+      `SELECT h.hospital_id,
+              COALESCE(f.forecast_daily, q.d, 0) AS d
+       FROM hospitals h
+       LEFT JOIN demand_forecast f ON f.hospital_id=h.hospital_id AND f.product_id=$1
+       LEFT JOIN (SELECT hospital_id, AVG(slot_count) AS d FROM appointment_queue
+                  WHERE product_id=$1 GROUP BY hospital_id) q ON q.hospital_id=h.hospital_id`, [pid]);
     const supMap = Object.fromEntries(sup.rows.map((r) => [r.hospital_id, Number(r.s)]));
     const demMap = Object.fromEntries(dem.rows.map((r) => [r.hospital_id, Number(r.d)]));
 
@@ -263,6 +275,10 @@ async function seedAnalytics() {
     "data/vaccine/outputs/wastage_simulation.csv",
     ["scenario", "expiry_waste", "openvial_waste", "total_waste"],
     (r) => [r.scenario, num(r.expiry_waste), num(r.openvial_waste), num(r.total_waste)]);
+  await loadCsvTable("demand_forecast",
+    "data/vaccine/outputs/demand_forecast.csv",
+    ["hospital_id", "product_id", "method", "forecast_daily"],
+    (r) => [r.hospital_id, r.product_id, r.method, num(r.forecast_daily)]);
 }
 
 async function seedUsers(hospitals) {
@@ -434,7 +450,7 @@ async function seedVaccine() {
   console.log(`[seed] appointment_queue: ${queue.length} (counts, no PII)`);
 }
 
-module.exports = { seed, recomputeOrders, recomputeTransshipment };
+module.exports = { seed, recomputeOrders, recomputeTransshipment, _median };
 
 if (require.main === module) {
   const { waitForDb } = require("./db");

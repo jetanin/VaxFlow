@@ -1,6 +1,12 @@
 const jwt = require("jsonwebtoken");
 
+// JWT secret ต้องตั้งผ่าน env ใน production — dev มี fallback แต่เตือนดัง ๆ
 const SECRET = process.env.JWT_SECRET || "vacflow-dev-secret-change-me";
+if (!process.env.JWT_SECRET) {
+  const msg = "[auth] JWT_SECRET ไม่ได้ตั้ง → ใช้ dev default (ห้ามใช้ใน production)";
+  if (process.env.NODE_ENV === "production") throw new Error(msg);
+  console.warn(msg);
+}
 const EXPIRES = "8h";
 
 function signToken(payload) {
