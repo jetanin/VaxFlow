@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 
 const TH_MONTHS = [
@@ -98,9 +98,32 @@ export default function BorrowMemo({ request, onClose }) {
     setItems((arr) => (arr.length > 1 ? arr.filter((_, j) => j !== i) : arr));
 
   const [msg, setMsg] = useState(null);
+  const [saving, setSaving] = useState(false);
   const [hasDoc, setHasDoc] = useState(!!request?.has_signed_doc);
   const [preview, setPreview] = useState(null); // {url, mime, filename}
   const fileRef = useRef();
+
+  // โหลดข้อมูลที่เคยกรอก/บันทึกไว้ของคำขอนี้ (ถ้ามี) มาเติมในฟอร์ม
+  useEffect(() => {
+    if (!request?.id) return;
+    api.getBorrowMemo(request.id).then((m) => {
+      if (m?.data?.form) setF((s) => ({ ...s, ...m.data.form }));
+      if (Array.isArray(m?.data?.items) && m.data.items.length)
+        setItems(m.data.items);
+    }).catch(() => {});
+  }, [request?.id]);
+
+  async function onSave() {
+    setSaving(true); setMsg(null);
+    try {
+      await api.saveBorrowMemo(request.id, { form: f, items });
+      setMsg("✅ บันทึกข้อมูลลงระบบแล้ว");
+    } catch (err) {
+      setMsg("⚠️ " + err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   function closePreview() {
     if (preview) URL.revokeObjectURL(preview.url);
@@ -194,7 +217,10 @@ export default function BorrowMemo({ request, onClose }) {
     <>
       <div className="memo-overlay">
         <div className="memo-toolbar no-print">
-          <button className="tab active" onClick={() => window.print()}>
+          <button className="tab active" onClick={onSave} disabled={saving}>
+            {saving ? "กำลังบันทึก..." : "💾 บันทึกข้อมูล"}
+          </button>
+          <button className="tab" onClick={() => window.print()}>
             🖨️ พิมพ์ / บันทึก PDF
           </button>
           <button className="tab" onClick={() => fileRef.current.click()}>

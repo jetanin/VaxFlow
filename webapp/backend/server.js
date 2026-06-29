@@ -483,6 +483,40 @@ app.get("/api/borrow/:id/document", requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------- ใบยืม-คืน: ข้อมูลที่กรอก (form fields) ----------
+// โหลดข้อมูลที่เคยกรอกไว้ของคำขอนี้ (null ถ้ายังไม่เคยบันทึก)
+app.get("/api/borrow/:id/memo", requireAuth, async (req, res, next) => {
+  try {
+    const cur = await pool.query(
+      "SELECT from_hospital, to_hospital FROM borrow_requests WHERE id=$1", [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: "ไม่พบคำขอ" });
+    if (!canAccessBorrow(req, cur.rows[0])) return res.status(403).json({ error: "ไม่มีสิทธิ์" });
+    const r = await pool.query(
+      "SELECT data, updated_by, updated_at FROM borrow_memo WHERE borrow_id=$1", [req.params.id]);
+    res.json(r.rows[0] || null);
+  } catch (e) { next(e); }
+});
+
+// บันทึกข้อมูลที่กรอกในใบยืม-คืน (upsert · เก็บ form + items เป็น JSON)
+app.put("/api/borrow/:id/memo", requireAuth, async (req, res, next) => {
+  try {
+    const { data } = req.body || {};
+    if (!data || typeof data !== "object") return res.status(400).json({ error: "ไม่มีข้อมูล" });
+    const cur = await pool.query(
+      "SELECT from_hospital, to_hospital FROM borrow_requests WHERE id=$1", [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: "ไม่พบคำขอ" });
+    if (!canAccessBorrow(req, cur.rows[0])) return res.status(403).json({ error: "ไม่มีสิทธิ์" });
+    await pool.query(
+      `INSERT INTO borrow_memo (borrow_id, data, updated_by) VALUES ($1, $2, $3)
+       ON CONFLICT (borrow_id) DO UPDATE SET
+         data = EXCLUDED.data, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [req.params.id, JSON.stringify(data), req.user.hospital_id || "admin"]);
+    await logAudit(req, "save_memo", "borrow_request", req.params.id,
+                   `บันทึกข้อมูลใบยืม-คืน (คำขอ #${req.params.id})`);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 // ---------- AUDIT TRAIL ----------
 // บันทึกธุรกรรมล่าสุด (timestamp + IP) — โปร่งใส ตรวจสอบได้
 app.get("/api/audit", requireAuth, requireAdmin, async (req, res, next) => {

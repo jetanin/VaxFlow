@@ -68,6 +68,10 @@ export const api = {
   uploadBorrowDoc: (id, payload) =>
     req(`/borrow/${id}/document`, { method: "POST", body: JSON.stringify(payload) }),
   getBorrowDoc: (id) => req(`/borrow/${id}/document`),
+  // ข้อมูลที่กรอกในใบยืม-คืน (บันทึก/โหลดลง DB)
+  getBorrowMemo: (id) => req(`/borrow/${id}/memo`),
+  saveBorrowMemo: (id, data) =>
+    req(`/borrow/${id}/memo`, { method: "PUT", body: JSON.stringify({ data }) }),
   // alerts + audit
   alerts: () => req("/alerts"),
   audit: () => req("/audit"),

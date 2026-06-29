@@ -102,6 +102,10 @@ async function ensureSchema() {
     CREATE TABLE IF NOT EXISTS demand_forecast (
       hospital_id TEXT, product_id TEXT, method TEXT, forecast_daily DOUBLE PRECISION,
       PRIMARY KEY (hospital_id, product_id));
+    -- ข้อมูลที่กรอกในใบขออนุมัติยืม-คืน (เก็บ form + items เป็น JSON ต่อคำขอ)
+    CREATE TABLE IF NOT EXISTS borrow_memo (
+      borrow_id INTEGER PRIMARY KEY REFERENCES borrow_requests(id),
+      data JSONB NOT NULL, updated_by TEXT, updated_at TIMESTAMPTZ DEFAULT now());
   `);
 }
 
