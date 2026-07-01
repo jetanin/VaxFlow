@@ -16,16 +16,15 @@ VacFlow คือต้นแบบแพลตฟอร์ม **แบ่งป
 - คลังแบบ aggregate รายวันติดตาม "ขวดที่เปิดแล้ว" ไม่ได้ → เกิดของหมดอายุทิ้งจำนวนมาก
 - แต่ละสาขาบริหารคลังแยกกัน ทำให้ล็อตที่เหลือที่หนึ่งหมดอายุ ขณะอีกที่ขาด
 
-## 💡 แนวคิดหลัก (Solution) — 3 โมดูลคำนวณ
+## 💡 แนวคิดหลัก (Solution) — 3 โมดูลคำนวณ (เรียกใช้จริงทั้ง webapp + pipeline)
 
-| โมดูล | หน้าที่ |
-| ----- | ------- |
-| **1. Dynamic Expire Calculator** | State machine ของวัคซีน — คำนวณ `effective_expiry` ใหม่ทุกครั้งที่เปลี่ยนสถานะจัดเก็บ (overwrite วันบนสลาก) |
-| **2. Predictive Matching Engine** | จับคู่โอนย้ายล็อตที่ใกล้เสื่อมไปสาขาดีมานด์สูงด้วย Transportation Model — ห้ามขนส่งขวดที่เปิดแล้ว |
-| **3. Multi-dose Pooling System** | รวมคิวนัด + Dynamic Queue Pulling เพื่อเคลียร์โดสค้างขวด (ทำงานบน "จำนวนคิว" เท่านั้น — ไม่แตะ PII) |
+| โมดูล                             | หน้าที่                                                                                       | จุดเรียกใช้                                         |
+| --------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| **1. Dynamic Expire Calculator**  | คำนวณ `effective_expiry` ใหม่ทุกครั้งที่เปลี่ยนสถานะ (overwrite วันบนสลาก)                    | `/engine/expire` · `POST /api/vials/:id/transition` |
+| **2. Predictive Matching Engine** | คัดกรองล็อตเสี่ยง (≤14 วัน + บริโภคต่ำ) → Transportation Model (LP) + time-window + lead cost | `/engine/match` · `recomputeTransshipment`          |
+| **3. Multi-dose Pooling System**  | รวมคิวนัดให้เต็มขวด ลดโดสค้างขวด (ทำงานบน "จำนวนคิว" ไม่แตะ PII)                              | `consolidate_queue` (pipeline/evaluate)             |
 
-> 🔒 **PDPA by design:** engine กลางทำงานบน **จำนวน (counts) + สถานะอายุขัย** เท่านั้น —
-> ข้อมูลนัดคนไข้ (เบอร์/ชื่อ) ไม่ออกนอกระบบโรงพยาบาล การยิง SMS เกิดภายในสาขา
+> 🔒 **PDPA by design:** เชื่อม HIS แบบ read-only ผ่าน view ที่ตัด PII (`vw_vacflow_*`) — แตะ `patient` ดิบไม่ได้ (ERROR 1142)
 
 ---
 
@@ -33,163 +32,148 @@ VacFlow คือต้นแบบแพลตฟอร์ม **แบ่งป
 
 ```
 ┌──────────────┐  /api   ┌────────────────┐  SQL   ┌────────────┐
-│ React (8080) │ ──────▶ │ Express (4000) │ ─────▶ │ PostgreSQL │
+│ React (8090) │ ──────▶ │ Express (4000) │ ─────▶ │ PostgreSQL │
 │  UI วัคซีน   │         │ auth/seed/audit│        │ (vacflow)  │
-└──────────────┘         └────────────────┘        └────────────┘
-                                                        │
-┌────────────────────────────────────────────┐         │
-│  vaccine-engine/ (FastAPI · Python · :8500)  │◀────────┘
-│  ├─ 1. Dynamic Expire Calculator  (พร้อม)    │
-│  ├─ 2. Predictive Matching Engine (skeleton) │
-│  └─ 3. Multi-dose Pooling System  (skeleton) │
-└──────────────────────────────────────────────┘
+└──────────────┘         └───────┬────────┘        └────────────┘
+                                 │ HTTP                  ▲
+                  ┌──────────────┴───────────────┐       │ fetch (read-only view)
+                  ▼                              ▼       │
+   ┌──────────────────────────┐     ┌────────────────────────────┐
+   │ vaccine-engine (8500)     │     │ Mock HOSxP (MySQL)          │
+   │ 1 Dynamic Expire ✓        │     │ vw_vacflow_* (per-hospital) │
+   │ 2 Matching (LP) ✓         │     │ vacflow_ro (SELECT view)    │
+   │ 3 Pooling ✓               │     └────────────────────────────┘
+   └──────────────────────────┘
+   ┌──────────────────────────┐
+   │ retrainer (01:00 ทุกวัน)  │ → python -m pipeline.run → POST /api/reseed
+   └──────────────────────────┘
 ```
 
-3 โมดูลเป็น logic เชิงคำนวณ (state machine / optimization / pooling) จึงแยกเป็น
-**FastAPI microservice (`vaccine-engine/`)** วางข้าง ๆ Node เดิมที่ทำ auth / seed / audit / serve React.
-
-| ส่วน | เทคโนโลยี | หน้าที่ |
-| ---- | --------- | ------- |
-| **frontend** | React + Vite + Leaflet | Map / วัคซีนทั้งหมด / แจ้งเตือน / ยืมวัคซีน / Audit |
-| **backend** | Node.js + Express + pg + JWT + maxmind | REST API + seed + auth + IP geolocation |
-| **vaccine-engine** | Python + FastAPI + (scipy/pulp) | 3 โมดูลคำนวณตาม Proposal §3 |
-| **database** | PostgreSQL 16 | hospitals / vaccine_product / vaccine_vial / appointment_queue / users / borrow / audit |
+| ส่วน               | เทคโนโลยี                              | หน้าที่                                                                     |
+| ------------------ | -------------------------------------- | --------------------------------------------------------------------------- |
+| **frontend**       | React + Vite + Leaflet                 | Map · วัคซีน · วิเคราะห์(AI) · สั่งซื้อ→HOSxP · แจ้งเตือน · ยืม-คืน · Audit |
+| **backend**        | Node.js + Express + pg + JWT + maxmind | REST API + seed (fetch จาก HIS) + auth + IP geolocation                     |
+| **vaccine-engine** | Python + FastAPI + scipy               | 3 โมดูลคำนวณ (Proposal §3) — เรียกจริงจาก backend + pipeline                |
+| **pipeline**       | Python (pipeline/)                     | features → forecast → optimize → evaluate (แทน notebook ใน prod)            |
+| **retrainer**      | Python + cron loop (GPU)               | เทรน/คำนวณใหม่ทุก 01:00 แล้ว reseed                                         |
+| **database**       | PostgreSQL 16 + Mock HOSxP (MySQL 8)   | คลัง/ผู้ใช้/ยืม/analytics + HIS connector                                   |
 
 ---
 
-## 🗃️ Data model (โดเมนวัคซีน)
+## 🧠 Demand Forecasting + การตัดสินใจ (ปิดวงจร ML)
 
-- **`vaccine_product`** — master ผลิตภัณฑ์ (mRNA / MULTI_DOSE) + อายุขัยแต่ละสถานะ + โดสต่อขวด
-- **`vaccine_vial`** — คลัง **ระดับขวด** : `state` (DEEP_FROZEN/THAWED/OPENED), `state_since`, `doses_remaining`, `label_expiry`, `effective_expiry`
-- **`appointment_queue`** — คิวนัดแบบ **นับจำนวน** (ไม่มี PII) สำหรับ Pooling
-- **view `vaccine_vial_status`** — สัญญาณไฟตามอายุที่เหลือ: 🔴 ≤14 วัน · 🟡 ≤21 วัน · 🟢 ปกติ (ขวด OPENED = 🔴 เสมอ และห้ามขนส่ง)
-
-รายละเอียด data dictionary: [docs/hospital_data_schema.md](docs/hospital_data_schema.md)
+- **พยากรณ์ที่ใช้จริง:** SMA (สภาวะปกติ) / Exponential Smoothing (สภาวะวิกฤต) — เลือกตามความผันผวน `CV=std/mean`
+  → `forecast_daily` ต่อ (รพ.×วัคซีน) เขียนลงตาราง `demand_forecast`
+  → **ขับ** การสั่งซื้อ (reorder) · แผนโอนย้าย (demand ปลายทาง) · เกณฑ์ overstock alert
+- **ML benchmark:** RandomForest · XGBoost · LightGBM · Neural Network จูนด้วย **Optuna** (GPU/CUDA)
+  → `model_comparison.csv` (เทียบกับ baseline SMA-7) แสดงในแท็บ 📊 วิเคราะห์ (AI)
 
 ---
 
-## 🔄 Workflow (ภาพรวมการทำงานตั้งแต่ต้นจนจบ)
+## 🗃️ Data model (Postgres)
 
-```
- ┌─────────────────── Data Science Pipeline (notebook/) ───────────────────┐
- │                                                                          │
- │  generate_hospital_data.py ─┐                                            │
- │  generate_vaccine_data.py ──┴─▶ data/vaccine/*.csv                       │
- │                                   │                                      │
- │   01 ─▶ 02 ─▶ 03 ─▶ 04 ─▶ 05      │ (clean ▸ EDA ▸ features ▸ train ▸ eval)│
- │   │     │     │     │     └─ wastage simulation → KPI ≥ 30%               │
- │   │     │     │     └─ SMA / Exponential Smoothing + Transportation Model │
- │   │     │     └─ lag / rolling (SMA) / ES features                        │
- │   │     └─ EDA: trend / seasonality / shelf-life status                   │
- │   └─ clean + สังเคราะห์ดีมานด์ (Stochastic Demand)                        │
- └──────────────────────────────────────────────────────────────────────────┘
-                                   │  data/vaccine/*.csv (seed)
-                                   ▼
- ┌─────────────────────────── Runtime (webapp/) ───────────────────────────┐
- │  docker compose up  →  Postgres (init.sql)  ◀── seed.js (โหลด CSV)        │
- │       React (8080) ──/api──▶ Express (4000) ──SQL──▶ Postgres            │
- │                                  └──▶ vaccine-engine (8500): 3 โมดูล      │
- │  ผู้ใช้ login → ดู Map/วัคซีน/แจ้งเตือน → ยืม-คืนวัคซีน → Audit            │
- └──────────────────────────────────────────────────────────────────────────┘
-```
+- **`vaccine_product`** — master ผลิตภัณฑ์ (mRNA / MULTI_DOSE) + อายุขัยแต่ละสถานะ + โดสต่อขวด (151 รายการจาก อย.)
+- **`vaccine_vial`** — คลัง **ระดับขวด**: `state`, `state_since`, `doses_remaining`, `label_expiry`, `effective_expiry`
+- **view `vaccine_vial_status`** — สัญญาณไฟ: 🔴 ≤14 วัน · 🟡 ≤21 วัน · 🟢 ปกติ (OPENED = 🔴 เสมอ, ห้ามขนส่ง)
+- **`appointment_queue`** — คิวนัดแบบนับจำนวน (ไม่มี PII) สำหรับ Pooling
+- **`hospital_distance`** — ระยะทาง **ตามถนนจริง** (OSRM) ระหว่าง รพ.
+- **`demand_forecast`** — ผลพยากรณ์ที่ขับการตัดสินใจ
+- **`order_recommendations`** — คำแนะนำสั่งซื้อ (reorder) → ออกเป็น PO command ไป HOSxP
+- **`borrow_requests` / `borrow_documents` / `borrow_memo`** — คำขอยืม + ไฟล์เซ็น + ข้อมูลใบยืมที่กรอก
+- **`analytics_*`** — ผลจาก pipeline (forecast / model_comparison / transshipment / wastage)
 
-### A) Pipeline ใน `notebook/` (รันตามลำดับ 00 → 05)
-
-| Notebook | หน้าที่ | ผลลัพธ์ |
-| -------- | ------- | ------- |
-| `00_load_data.ipynb` | โหลดข้อมูลวัคซีนจริง (OpenD / FDA) + แปลงเป็น CSV | `data/{opend,fda}/` |
-| `01_data_cleaning.ipynb` | ตรวจความถูกต้องระดับขวด + สังเคราะห์ **ดีมานด์เชิงสุ่ม** (180 วัน) | `data/vaccine/clean/` |
-| `02_eda_visualization.ipynb` | สำรวจแนวโน้ม / ฤดูกาล / สถานะอายุขัย | กราฟ EDA |
-| `03_feature_engineering.ipynb` | lag / rolling (**SMA**) / **Exponential Smoothing** | `data/vaccine/features/` |
-| `04_model_training.ipynb` | SMA/ES + **เทียบ RF · XGBoost · LightGBM · NN จูนด้วย Optuna** + **Transportation Model** (LP) | `data/vaccine/outputs/` |
-| `05_model_evaluation.ipynb` | MAE/RMSE/MAPE + **wastage simulation** (KPI ≥ 30%) | `wastage_simulation.csv` |
-
-### B) ลำดับการรันจริง (End-to-End)
-
-```powershell
-# 1) สร้างข้อมูลจำลอง
-python scripts/generate_hospital_data.py
-python scripts/generate_vaccine_data.py
-
-# 2) (ตัวเลือก) รัน pipeline วิเคราะห์/พิสูจน์ KPI  — notebook 00 → 05
-
-# 3) เปิดระบบ
-cd webapp && docker compose up --build
-
-# 4) login: admin / vacflow123  หรือ  HOSP_001 / vacflow123
-```
-
-### C) Workflow การใช้งานในแอป (per role)
-
-- **Hospital** 🏥 : ดูคลังวัคซีนของตน → ขวด 🔴 ใกล้หมดอายุ → **ขอยืม** จากสาขา 🟢 ใกล้สุด → ออก/อัปโหลดใบยืม-คืน
-- **Lender** 🤝 : รับคำขอ → **อนุมัติ/ปฏิเสธ** (ห้ามยืมขวดที่เปิดแล้ว — OPENED)
-- **Admin** 🛡️ : ดูภาพรวมทุกสาขาบนแผนที่ + ตรวจ **Audit Trail** (ทุกธุรกรรม timestamp + IP)
-
-### D) เชื่อมต่อ HIS จริงของโรงพยาบาล (Tier 2 — Read-only DB Connector)
-
-VacFlow ต่อ HIS เดิม (เช่น **HOSxP**) แบบ **อ่านอย่างเดียว** ผ่าน user `vacflow_ro` ที่มีสิทธิ์
-`SELECT` เฉพาะ **view ที่ตัด PII แล้ว** (`vw_vacflow_*`) — บังคับ Data Minimization ที่ระดับ DB
-ไม่ใช่แค่สัญญาในโค้ด (ลอง `SELECT * FROM patient` จะโดน `ERROR 1142` ทันที)
-
-```
-┌──────────── โรงพยาบาล (on-prem) ────────────┐
-│  HIS เดิม (HOSxP / MySQL)                     │
-│   ├ patient · opitemrece (PII)   ✗ เข้าไม่ถึง │
-│   └ vw_vacflow_* (aggregate)     ✓ เข้าได้    │
-│              │ vacflow_ro (SELECT view เท่านั้น)│
-│              ▼                                │
-│   VacFlow Edge Agent (FastAPI)                │
-│   adapters/hosxp_adapter.py → map TMT→product │
-│   → Dynamic Expire → ส่งเฉพาะ "ยอดรวม/สถานะ"  │
-└──────────────────────────────────────────────┘
-```
-
-ทดลองได้จริงในเครื่องเดียวด้วย **Mock HOSxP** (`mock-his/`):
-
-```powershell
-docker compose -f docker-compose.mock.yml up --build
-# Adminer: http://localhost:8081  (login เป็น vacflow_ro แล้วลองยิง PII ดูว่าโดนบล็อก)
-# พิสูจน์สิทธิ์: mysql -h 127.0.0.1 -u vacflow_ro -p mock_hosxp < mock-his/tests/test_ro_cannot_read_pii.sql
-```
-
-> รายละเอียด Tier 1/2/3 + adapter pattern ดูใน Integration Plan
-
-> ⚠️ เปลี่ยน credential ฐานข้อมูล (medcast → vacflow) แล้ว — ถ้าเคยรันมาก่อนต้องล้าง volume เดิม:
-> `cd webapp && docker compose down -v && docker compose up --build`
+รายละเอียด: [docs/hospital_data_schema.md](docs/hospital_data_schema.md) · [docs/PROPOSAL_GAP_ANALYSIS.md](docs/PROPOSAL_GAP_ANALYSIS.md) · [docs/ARCHITECTURE_REVIEW.md](docs/ARCHITECTURE_REVIEW.md)
 
 ---
 
 ## 🚀 เริ่มต้นใช้งาน
 
-### 1. สร้างข้อมูลจำลอง (เครือข่ายสาธิต 13 สาขา)
+### Fast init (Windows)
 
 ```powershell
-python scripts/generate_hospital_data.py    # -> data/hospitals/hospital_master.csv (รพ.ตัวอย่างจริง 13 แห่ง)
-python scripts/generate_vaccine_data.py      # -> data/vaccine/*.csv (vial-level + คิวนัด + transport_rate)
+.\init-system.ps1
+```
+
+สคริปต์นี้จะ stop stack เดิม, generate ข้อมูล, แล้ว start ทั้ง webapp stack และ mock-HIS stack ให้ครบ
+ในครั้งเดียว
+
+### 1. สร้างข้อมูลจำลอง (เครือข่ายสาธิต 13 สาขา · 151 วัคซีน)
+
+```powershell
+python scripts/generate_hospital_data.py     # -> hospital_master.csv (รพ.จริง 13 แห่ง)
+python scripts/generate_vaccine_data.py       # -> vaccine_*.csv (vial-level + คิวนัด + transport_rate)
+python scripts/generate_mock_his_seed.py      # -> mock-his seed (per-hospital, สำหรับ HIS connector)
+python scripts/compute_road_distance.py       # -> distance_matrix.csv (OSRM ถนนจริง · fallback haversine)
 ```
 
 ### 2. เปิด Web App ด้วย Docker
 
 ```powershell
 cd webapp
-docker compose up --build      # ต้องเปิด Docker Desktop ก่อน
+docker compose up -d --build              # core: db + mock-his + vaccine-engine + backend + frontend
+docker compose --profile train up -d      # + retrainer (เทรนรายวัน 01:00, ต้องมี NVIDIA GPU ถ้าจะใช้ CUDA)
+docker compose --profile debug up -d       # + adminer (จัดการ DB)
 ```
 
-- Frontend (HTTP): http://localhost:8080 · (HTTPS): https://localhost:8443
-- Backend API: http://localhost:4000/api/health · Adminer: http://localhost:8081
-- vaccine-engine: http://localhost:8500/docs
-- Login เริ่มต้น: `admin` / `HOSP_001…` รหัส `vacflow123`
+- Frontend: **http://localhost:8090** · (HTTPS) https://localhost:8443
+- Backend API: http://localhost:4000/api/health · vaccine-engine: http://localhost:8500/docs
+- Adminer (profile debug): http://localhost:8081
 
-> รายละเอียด endpoint และ dev แบบ local (npm) ดูที่ [webapp/README.md](webapp/README.md)
+### 3. บัญชีผู้ใช้ (seed อัตโนมัติ · รหัส `vacflow123`)
 
-### 3. (ตัวเลือก) รัน vaccine-engine แยก
+| Username                | บทบาท               | สิทธิ์                                   |
+| ----------------------- | ------------------- | ---------------------------------------- |
+| `admin`                 | 🛡️ admin            | เห็นทุกโรงพยาบาล + Audit Trail + retrain |
+| `HOSP_001` … `HOSP_013` | 🏥 hospital         | เห็น/จัดการเฉพาะ รพ.ตัวเอง               |
+| `HOSP_001_director` …   | 🧑‍⚕️ ผอ.รพ (director) | เหมือน hospital (ขอบเขต รพ.ตัวเอง)       |
+
+> ⚙️ secrets ตั้งใน `.env` (ดู [.env.example](.env.example)) — `JWT_SECRET` บังคับใน production · `VACFLOW_NOW` = time anchor
+
+---
+
+## 🔄 Pipeline (pipeline-as-code) + Notebooks
+
+**Production path** ไม่พึ่ง jupyter อีกต่อไป — retrainer รัน `python -m pipeline.run`:
+
+```
+features → forecast → optimize → evaluate   (+ train ถ้า VACFLOW_TRAIN=1)
+```
+
+| pipeline module                              | หน้าที่                                               | output                                                 |
+| -------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------ |
+| [pipeline/features.py](pipeline/features.py) | lag/SMA/ES + exogenous (ประชากร/ไข้หวัดใหญ่/อากาศ)    | `features/demand_features.csv`                         |
+| [pipeline/forecast.py](pipeline/forecast.py) | SMA/ES + scenario(CV) + `forecast_daily`              | `forecast_model_selection.csv` · `demand_forecast.csv` |
+| [pipeline/optimize.py](pipeline/optimize.py) | Transportation Model (engine LP + time-window + lead) | `transshipment_plan.csv`                               |
+| [pipeline/evaluate.py](pipeline/evaluate.py) | wastage simulation + stress test (pooling จริง)       | `wastage_simulation.csv` · `stress_test.csv`           |
+| [pipeline/train.py](pipeline/train.py)       | ML benchmark RF/XGB/LGB/NN + Optuna (GPU)             | `model_comparison.csv`                                 |
+
+> `notebook/00–05` เก็บไว้สำหรับ **explore/นำเสนอ** (ลอจิกหลักย้ายมาอยู่ที่ pipeline/ + vaccine-engine แล้ว)
+
+---
+
+## 🔌 เชื่อมต่อ HIS จริง (Tier 2 — Read-only DB Connector)
+
+VacFlow ต่อ HIS เดิม (เช่น **HOSxP**) แบบ **อ่านอย่างเดียว** ผ่าน user `vacflow_ro` ที่ SELECT ได้เฉพาะ
+**view ที่ตัด PII** (`vw_vacflow_*`) — บังคับ Data Minimization ที่ระดับ DB (ลอง `SELECT * FROM patient` → `ERROR 1142`)
+backend จะ **fetch per-hospital vials จาก HIS** มาลง Postgres (ถ้า HIS ไม่พร้อม → fallback อ่าน CSV)
+
+ทดลองด้วย Mock HOSxP:
 
 ```powershell
-cd vaccine-engine
-pip install -r requirements.txt
-uvicorn app:app --reload --port 8500
-pytest -q                       # ทดสอบ Dynamic Expire Calculator
+docker compose -f docker-compose.mock.yml up --build
+# พิสูจน์สิทธิ์: docker exec -i vacflow-mock-his mysql -uvacflow_ro -pCHANGE_ME_strong_pw mock_hosxp < mock-his/tests/test_ro_cannot_read_pii.sql
 ```
+
+---
+
+## ✅ Test & CI
+
+```powershell
+cd webapp/backend && npm install && npm test     # jest: unit + integration (14)
+cd vaccine-engine && pytest tests -q              # engine: 12
+```
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): ruff + engine pytest + backend jest + frontend build + integration (compose up → ยิง API จริง)
 
 ---
 
@@ -197,34 +181,28 @@ pytest -q                       # ทดสอบ Dynamic Expire Calculator
 
 ```
 VacFlow/
-├── notebook/
-│   └── 00_load_data.ipynb          # โหลดข้อมูลวัคซีน (OpenD / FDA) + แปลงเป็น CSV
-├── vaccine-engine/                 # FastAPI microservice (3 โมดูลคำนวณ)
-│   ├── app.py
-│   ├── modules/{dynamic_expire,matching_engine,pooling}.py
-│   ├── adapters/hosxp_adapter.py   # Tier 2: อ่าน view HOSxP (read-only, ไม่มี PII)
-│   └── tests/
-├── mock-his/                       # Mock HOSxP (MySQL) สำหรับทดสอบ Tier 2 connector
-│   ├── init/{01_schema,02_seed,03_views_grants}.sql
-│   └── tests/test_ro_cannot_read_pii.sql
-├── docker-compose.mock.yml         # mock-his + vacflow-edge + adminer
-├── webapp/                         # Full-stack (React + Node + Postgres + Docker)
-│   ├── docker-compose.yml
-│   ├── db/init.sql                 # schema + vaccine_vial_status view
-│   ├── backend/                    # Express + pg + seeder
-│   └── frontend/                   # React + Vite + Leaflet
-├── scripts/
-│   ├── generate_hospital_data.py   # ทะเบียน รพ. (hospital_master.csv)
-│   └── generate_vaccine_data.py    # vial-level inventory + คิวนัด
-├── docs/hospital_data_schema.md
-├── data/                           # (gitignore) hospitals / vaccine / opend / fda
-└── README.MD
+├── notebook/00–05.ipynb            # explore/นำเสนอ (ลอจิกหลักอยู่ที่ pipeline/)
+├── pipeline/                       # pipeline-as-code (features/forecast/optimize/evaluate/train/run)
+├── vaccine-engine/                 # FastAPI — 3 โมดูลคำนวณ + adapters/hosxp_adapter.py + tests
+├── retrainer/                      # เทรนรายวัน 01:00 → pipeline.run → reseed
+├── mock-his/                       # Mock HOSxP (MySQL) + test_ro_cannot_read_pii.sql
+├── webapp/
+│   ├── docker-compose.yml          # db + mock-his + vaccine-engine + backend + frontend (+profiles: train/debug)
+│   ├── backend/  (server.js · seed.js · hisFetch.js · auth.js · __tests__/)
+│   └── frontend/ (React + Vite + Leaflet)
+├── scripts/                        # generate_hospital_data / generate_vaccine_data / generate_mock_his_seed / compute_road_distance
+├── docs/                           # hospital_data_schema · PROPOSAL_GAP_ANALYSIS · ARCHITECTURE_REVIEW
+├── .github/workflows/ci.yml
+├── .env.example
+└── data/                           # (gitignore) hospitals / vaccine / fda / opend
 ```
 
 ---
 
-## 🛠️ เทคโนโลยี (Tech Stack)
+## 🛠️ Tech Stack
 
-- **Engine:** Python + FastAPI · state machine · (scipy / pulp สำหรับ Transportation Model)
-- **Web App:** React + Vite + Leaflet (frontend) · Node.js + Express (backend) · PostgreSQL · Docker Compose
-- **Auth & Security:** JWT + bcryptjs · role-based access · TLS/SSL (nginx, HTTP+HTTPS) · IP geolocation (MaxMind GeoLite2 / ip-api) สำหรับ Audit Trail
+- **Engine/Pipeline:** Python · FastAPI · scipy (LP) · scikit-learn / XGBoost / LightGBM / Optuna (GPU)
+- **Web App:** React + Vite + Leaflet · Node.js + Express · PostgreSQL · Mock HOSxP (MySQL) · Docker Compose
+- **Security:** JWT + bcryptjs · role-based (admin/hospital/director) · TLS (nginx) · IP geolocation · PDPA read-only view
+- **Geospatial:** OSRM (ระยะทางถนนจริง) · fallback haversine
+- **Quality:** jest + supertest · pytest · GitHub Actions CI

@@ -37,8 +37,8 @@ async function fetchVaccineDomain() {
   const conn = await mysql.createConnection(CFG);
   try {
     const [products] = await conn.query(
-      `SELECT product_id, name, type, doses_per_vial,
-              deep_frozen_life_days, thawed_life_days, open_life_hours
+          `SELECT product_id, name, type, storage_temp, storage_min_c, storage_max_c,
+            doses_per_vial, deep_frozen_life_days, thawed_life_days, open_life_hours
        FROM vw_vacflow_vaccine_product`);
     const [vials] = await conn.query(
       `SELECT vial_id, lot_id, product_id, hospital_id, state, state_since,

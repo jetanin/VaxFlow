@@ -39,8 +39,8 @@ CREATE USER IF NOT EXISTS 'vacflow_ro'@'%'
 CREATE OR REPLACE
   SQL SECURITY DEFINER
   VIEW vw_vacflow_vaccine_product AS
-SELECT product_id, name, type, doses_per_vial,
-       deep_frozen_life_days, thawed_life_days, open_life_hours
+SELECT product_id, name, type, storage_temp, storage_min_c, storage_max_c,
+       doses_per_vial, deep_frozen_life_days, thawed_life_days, open_life_hours
 FROM vaccine_product;
 
 CREATE OR REPLACE

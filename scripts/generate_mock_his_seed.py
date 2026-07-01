@@ -1,18 +1,20 @@
 """สร้าง mock-his/init/02_seed.sql (ข้อมูลจำลอง Mock HOSxP / MySQL)
 
-ดึง "วัคซีนทั้งหมด" จาก data/vaccine/vaccine_product.csv (master เดียวกับ webapp — มาจาก อย.)
-มาลงตาราง drugitems ของ Mock HIS แล้วผูก:
+ดึง "วัคซีนทั้งหมด" จาก data/vaccine/vaccine_product.csv (master เดียวกับ webapp — 151 รายการ)
+แล้ว merge cold-chain จาก data/fda/vaccine_merged_with_storage.csv เพื่อเติม storage_temp:
   - opitemrece      : การจ่ายวัคซีน 45 วันย้อนหลัง (มี hn = PII)
   - wh_drug_balance : คลังระดับ lot — 1 ล็อตต่อวัคซีน วน red/yellow/green ให้ VacFlow จับ
 
 รันซ้ำได้ผลคงที่ (deterministic) — ผลลัพธ์ overwrite ไฟล์ 02_seed.sql
 """
 from pathlib import Path
+import re
 
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTS = ROOT / "data" / "vaccine" / "vaccine_product.csv"
+STORAGE_MASTER = ROOT / "data" / "fda" / "vaccine_merged_with_storage.csv"
 OUT = ROOT / "mock-his" / "init" / "02_seed.sql"
 
 
@@ -25,6 +27,41 @@ def tmt_of(product_id: str) -> str:
     """รหัสกลาง TMT (ใช้ ATC ที่ฝังใน product_id: VAX_J07BX03_044 -> TMT-J07BX03)."""
     parts = str(product_id).split("_")
     return f"TMT-{parts[1]}" if len(parts) >= 2 else f"TMT-{product_id}"
+
+
+def preferred_name(row: dict) -> str:
+    """ชื่อที่อ่านง่ายจาก master อย. พร้อม fallback ให้ปลอดภัย."""
+    for key in ("name", "trade_name_en", "trade_name_th", "product_id"):
+        value = row.get(key)
+        if pd.notna(value) and str(value).strip() and str(value).strip() != "-":
+            return str(value).strip()
+    return str(row.get("product_id", ""))
+
+
+def storage_bounds(storage_temp: str) -> tuple[int | None, int | None]:
+    """แปลง storage_temp เป็นช่วงอุณหภูมิแบบ explicit."""
+    text = str(storage_temp).split("→", 1)[0].split("->", 1)[0].strip()
+    match = re.search(r"(-?\d+)\s*(?:\.\.|-)\s*(-?\d+)", text)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    nums = re.findall(r"-?\d+", text)
+    if len(nums) >= 2:
+        return int(nums[0]), int(nums[1])
+    return None, None
+
+
+def storage_temp_for(row: dict) -> str:
+    """เลือก storage_temp ที่ explicit ถ้ามี หรือ fallback จาก product master."""
+    value = row.get("storage_temp")
+    if pd.notna(value) and str(value).strip():
+        return str(value).strip()
+    if str(row.get("type", "")).strip().upper() == "MRNA":
+        return "-90..-60°C → 2-8°C"
+    if int(row.get("open_life_hours", 0) or 0) >= 24 * 7:
+        return "2-8°C (liquid)"
+    if int(row.get("doses_per_vial", 0) or 0) == 1:
+        return "2-8°C (single-dose)"
+    return "2-8°C"
 
 
 HOSPITALS = [
@@ -67,6 +104,12 @@ EXPIRE_CYCLE = [
 
 def main():
     df = pd.read_csv(PRODUCTS, encoding="utf-8-sig").drop_duplicates("product_id")
+    storage_df = (
+        pd.read_csv(STORAGE_MASTER, encoding="utf-8-sig")
+        .drop_duplicates("product_id")[["product_id", "storage_temp"]]
+    )
+    df = df.merge(storage_df, on="product_id", how="left")
+    df["storage_temp"] = df.apply(lambda row: storage_temp_for(row), axis=1)
     products = df.to_dict("records")
 
     lines = []
@@ -93,7 +136,7 @@ def main():
     # ── drugitems : วัคซีนทั้งหมด + ยา non-vaccine 1 ตัว ──
     lines.append(f"-- master ยา/วัคซีน + รหัสกลาง TMT — วัคซีนทั้งหมด {len(products)} รายการจาก อย.")
     lines.append("INSERT INTO drugitems (icode, name, units, tmt_code, is_vaccine) VALUES")
-    rows = [f"('{q(p['product_id'])}','{q(p['name'])}','dose','{tmt_of(p['product_id'])}',1)"
+    rows = [f"('{q(p['product_id'])}','{q(preferred_name(p))}','dose','{tmt_of(p['product_id'])}',1)"
             for p in products]
     rows.append("('DRG001','Paracetamol 500mg','tablet','TMT-PARA-500',0)")
     lines.append(",\n".join(rows) + ";")
@@ -101,9 +144,9 @@ def main():
 
     # ── opitemrece : การจ่ายวัคซีน 45 วันย้อนหลัง (มี hn = PII) ──
     lines.append("-- การจ่ายวัคซีน 45 วันย้อนหลัง (สุ่มผู้ป่วย + จำนวน) — มี hn = PII")
-    lines.append("INSERT INTO opitemrece (vn, hn, icode, qty, rxdate)")
     lines.append("WITH RECURSIVE days(n) AS (")
     lines.append("  SELECT 0 UNION ALL SELECT n + 1 FROM days WHERE n < 44)")
+    lines.append("INSERT INTO opitemrece (vn, hn, icode, qty, rxdate)")
     lines.append("SELECT")
     lines.append("  CONCAT('VN', LPAD(FLOOR(RAND() * 1000000), 6, '0')) AS vn,")
     lines.append("  ELT(1 + FLOOR(RAND() * 10),")
@@ -138,15 +181,20 @@ def main():
             lines.append(",\n".join(part) + ";")
         lines.append("")
 
-    prod = pd.read_csv(ROOT / "data" / "vaccine" / "vaccine_product.csv",
-                       encoding="utf-8-sig").to_dict("records")
+    prod = products
     emit_chunked(
         "vaccine_product",
-        ["product_id", "name", "type", "doses_per_vial",
-         "deep_frozen_life_days", "thawed_life_days", "open_life_hours"],
-        [f"('{q(p['product_id'])}','{q(p['name'])}','{q(p['type'])}',"
-         f"{int(p['doses_per_vial'])},{int(p['deep_frozen_life_days'])},"
-         f"{int(p['thawed_life_days'])},{int(p['open_life_hours'])})" for p in prod])
+        ["product_id", "name", "type", "storage_temp", "storage_min_c", "storage_max_c",
+         "doses_per_vial", "deep_frozen_life_days", "thawed_life_days", "open_life_hours"],
+        [
+            f"('{q(p['product_id'])}','{q(preferred_name(p))}','{q(p['type'])}',"
+            f"'{q(p['storage_temp'])}',"
+            f"{storage_bounds(p['storage_temp'])[0] if storage_bounds(p['storage_temp'])[0] is not None else 'NULL'},"
+            f"{storage_bounds(p['storage_temp'])[1] if storage_bounds(p['storage_temp'])[1] is not None else 'NULL'},"
+            f"{int(p['doses_per_vial'])},{int(p['deep_frozen_life_days'])},"
+            f"{int(p['thawed_life_days'])},{int(p['open_life_hours'])})"
+            for p in prod
+        ])
 
     vial = pd.read_csv(ROOT / "data" / "vaccine" / "vaccine_vial.csv",
                        encoding="utf-8-sig").to_dict("records")
