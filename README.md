@@ -129,6 +129,18 @@ docker compose --profile debug up -d       # + adminer (จัดการ DB)
 
 > ⚙️ secrets ตั้งใน `.env` (ดู [.env.example](.env.example)) — `JWT_SECRET` บังคับใน production · `VACFLOW_NOW` = time anchor
 
+### 4. บัญชีฐานข้อมูล (DB Users)
+
+| Database | User | สิทธิ์ | Password |
+| --- | --- | --- | --- |
+| PostgreSQL (`webapp/db`) | `vacflow` | app user สำหรับ backend + Adminer | `vacflow` |
+| MySQL (`mock-his`) | `root` | full access สำหรับ init / debug ภายใน container | `rootpw` |
+| MySQL (`mock-his`) | `vacflow_ro` | read-only ผ่าน view `vw_vacflow_*` | `CHANGE_ME_strong_pw` |
+| MySQL (`mock-his`) | `vacflow_admin` | admin ของ mock-his · full access บน `mock_hosxp.*` | `CHANGE_ME_admin_pw` |
+
+> ใช้ `db` เป็น host เฉพาะตอนต่อ PostgreSQL ของ webapp ใน `webapp/docker-compose.yml`
+> และใช้ `mock-his` เป็น host ตอนต่อ MySQL ของ mock-his ใน `docker-compose.mock.yml`
+
 ---
 
 ## 🔄 Pipeline (pipeline-as-code) + Notebooks
@@ -163,6 +175,9 @@ backend จะ **fetch per-hospital vials จาก HIS** มาลง Postgres 
 docker compose -f docker-compose.mock.yml up --build
 # พิสูจน์สิทธิ์: docker exec -i vacflow-mock-his mysql -uvacflow_ro -pCHANGE_ME_strong_pw mock_hosxp < mock-his/tests/test_ro_cannot_read_pii.sql
 ```
+
+- บัญชี admin ของ mock-his: `vacflow_admin` / `CHANGE_ME_admin_pw`
+- ใน Adminer ของ mock-his ให้ใช้ Server `mock-his` ไม่ใช่ `db`
 
 ---
 
